@@ -34,6 +34,7 @@ A spec, handed off ready for implementation: design docs in this repo covering a
 - [Research Rust crates for heading-based Markdown sectioning](tickets/research-markdown-sectioning.md): four parser crates probed on one document (three give byte offsets, comrak only line:column); none dedupes duplicate headings; notectl-outline lacks setext, front matter and replace.
 - [Agent and reviewer feedback loop](tickets/agent-reviewer-loop.md): polling plus blocking `--wait`; `--since <comment-id>` instead of stored cursors; default view is open Threads on the Agent's Artifacts; `--addresses` posts an auto-reply but only the Reviewer resolves.
 - [Diagram format](tickets/diagram-format.md): Kind `diagram` with format `mermaid` or `svg` in v1 (D2 and Excalidraw later); Mermaid rendered server-side to SVG by Pele in an embedded JS engine, invalid source rejected at submit; both shown via `<img>` from the untrusted origin. See ADR 0002.
+- [Artifact kinds and storage](tickets/kinds-and-storage.md): Kinds markdown, html (a Bundle of files), image, diagram; every Revision a file set stored as content-addressed sqlite BLOBs; markdown embeds image and diagram Artifacts via `cairn:id[@rev]`; fixed size limits. See ADR 0003 and 0004.
 
 ## Not yet specified
 

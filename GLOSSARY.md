@@ -4,10 +4,16 @@
 Something an Agent submits for a Reviewer to read and discuss. It has a stable identity; its current content is its latest Revision.
 
 **Kind**
-The category an Artifact belongs to: markdown, html, image, or diagram. A diagram also has a format (mermaid or svg). _(The exact set of Kinds, especially for html, is still undecided.)_
+The category an Artifact belongs to: markdown, html, image, or diagram. A diagram also has a format (mermaid or svg). Fixed when the Artifact is created.
 
 **Revision**
 An immutable, complete version of an Artifact's content, produced by each edit. Numbered 1, 2, 3 within its Artifact. Revisions are never changed after creation.
+
+**Bundle**
+The set of files that makes up one html Revision: an entry page plus its images and other assets.
+
+**Embed**
+A markdown Artifact showing an image or diagram Artifact by pointing at it. The markdown itself holds no image files.
 
 **Comment**
 A remark on one Revision of an Artifact, optionally pointing at a part of it (a line range, or for markdown a section). Written by a Reviewer or an Agent. Never edited after posting. _(Section addressing is still undecided.)_
