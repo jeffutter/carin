@@ -36,6 +36,7 @@ A spec, handed off ready for implementation: design docs in this repo covering a
 - [Diagram format](tickets/diagram-format.md): Kind `diagram` with format `mermaid` or `svg` in v1 (D2 and Excalidraw later); Mermaid rendered server-side to SVG by Pele in an embedded JS engine, invalid source rejected at submit; both shown via `<img>` from the untrusted origin. See ADR 0002.
 - [Artifact kinds and storage](tickets/kinds-and-storage.md): Kinds markdown, html (a Bundle of files), image, diagram; every Revision a file set stored as content-addressed sqlite BLOBs; markdown embeds image and diagram Artifacts via `cairn:id[@rev]`; fixed size limits. See ADR 0003 and 0004.
 - [Markdown section addressing](tickets/markdown-section-addressing.md): Sections named by a heading path (suffix match, `#n` for duplicates), including children; replace includes the heading line and makes a new full Revision of the latest; Comment anchors share the path; pulldown-cmark, top-level headings only.
+- [CLI surface and output contract](tickets/cli-surface.md): flat verbs plus a `comment` group; global `--role/--author/--session/--db`; JSON output by default; exit codes 0-5; `edit` whole or `--section`; `delete --yes`; `view` prints a URL; no local-image upload in v1.
 
 ## Not yet specified
 
