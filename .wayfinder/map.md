@@ -26,6 +26,8 @@ A spec, handed off ready for implementation: design docs in this repo covering a
 
 <!-- one line per closed ticket -->
 
+- [Research diagram formats and safe browser rendering](tickets/research-diagram-formats.md): six formats surveyed (Mermaid, SVG, Excalidraw, Graphviz, D2, PlantUML) with rendering and security notes; LLM authorability and a few renderer details unconfirmed.
+
 ## Not yet specified
 
 - Concurrency and conflicts when an agent edits while a reviewer comments.
