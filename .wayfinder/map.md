@@ -28,6 +28,7 @@ A spec, handed off ready for implementation: design docs in this repo covering a
 <!-- one line per closed ticket -->
 
 - [Research diagram formats and safe browser rendering](tickets/research-diagram-formats.md): six formats surveyed (Mermaid, SVG, Excalidraw, Graphviz, D2, PlantUML) with rendering and security notes; LLM authorability and a few renderer details unconfirmed.
+- [Revisions, comments and attribution](tickets/revisions-and-comment-anchoring.md): immutable full-snapshot Revisions (`abc123@3`); Comments anchor to one Revision with optional line/section locator, never re-anchored; one-level resolvable Threads; author plus nullable session labels; whole-Artifact hard delete.
 - [Research iframe sandboxing and CSP for untrusted agent HTML](tickets/research-iframe-sandbox.md): sandbox tokens, srcdoc vs URL, CSP, separate origin/port and axum surveyed; several points marked not verified (srcdoc CSP inheritance, cross-port cookies, images in opaque origin, dual axum listeners).
 - [Research building Svelte in nix and embedding it in an axum binary](tickets/research-svelte-nix-embed.md): npm hashing options, crane source filtering, rust-embed/axum-embed, SPA output and dev proxy surveyed; nothing built in nix, a few gaps listed.
 - [Research Rust crates for heading-based Markdown sectioning](tickets/research-markdown-sectioning.md): four parser crates probed on one document (three give byte offsets, comrak only line:column); none dedupes duplicate headings; notectl-outline lacks setext, front matter and replace.
