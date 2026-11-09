@@ -13,9 +13,9 @@ A spec, handed off ready for implementation: design docs in this repo covering a
 - Cairn: a Rust CLI for agents to submit artifacts that a human reviews and discusses. See `GLOSSARY.md` for terms (Artifact, Kind, Revision, Comment, Agent, Reviewer); sharpen the loose ones as their tickets resolve.
 - Planning only. Prototypes are allowed but throwaway: they live on `prototype/<name>` branches or under `.wayfinder/assets/`, never in `src/`.
 - Tracker: local markdown. Tickets are `.wayfinder/tickets/<slug>.md`; frontmatter holds `type`, `status`, `assignee` (the claim) and `blocked_by`. Frontier = open, unclaimed, every `blocked_by` ticket closed. Committed to the current branch.
-- Stack: Rust, clap, sqlite, axum; a JSON API others can build on. Web UI framework is open: Svelte was the first idea, but the user now leans toward htmx (server-rendered HTML fragments, no npm build) because browsing and reviewing artifacts is not expected to be very interactive. A lean, not a decision; the Web UI build ticket settles it.
+- Stack: Rust, clap, sqlite, axum; a JSON API others can build on. Web UI: server-rendered HTML with htmx and maud, calling core directly. Settled by the Web UI build ticket (ADR 0006).
 - The web UI's own framework is separate from artifact content: an Agent may submit a single-page app as an Artifact, but that is untrusted content shown in a sandboxed frame, unrelated to how the review UI is built.
-- Nix flake for the project; every dependency comes from nix. Copy the layout of `github.com/jeffutter/notectl` and `github.com/jeffutter/graphql-document-utils` (nixpkgs-unstable, flake-utils, rust-overlay, crane, clang+mold on Linux, nixpkgs-fmt). The only open nix question is the web UI build (npm hashing if Svelte, none if htmx).
+- Nix flake for the project; every dependency comes from nix. Copy the layout of `github.com/jeffutter/notectl` and `github.com/jeffutter/graphql-document-utils` (nixpkgs-unstable, flake-utils, rust-overlay, crane, clang+mold on Linux, nixpkgs-fmt). The web UI build is settled: no npm, htmx pinned with fetchurl.
 - Topology: one binary. A subcommand starts the axum server; the other subcommands manipulate the sqlite database directly through a shared core library. Agents and server are on the same machine; nothing on other hosts.
 - History matters: edits keep history. Comments attach to a version of an artifact; for markdown, possibly to a section or line.
 - Markdown artifacts should support retrieving and editing by heading section, to save agent tokens.
@@ -43,6 +43,7 @@ A spec, handed off ready for implementation: design docs in this repo covering a
 - [Web safety model for untrusted artifacts](tickets/web-safety-model.md): second loopback port as the untrusted origin; html in `sandbox="allow-scripts"` iframe with a no-network CSP (Bundles self-contained); images and SVG via `<img>` with a script-less sandbox CSP; UI escapes everything and drops raw HTML. Spike-verified in Chromium. See ADR 0005.
 
 - [Project and worktree scoping](tickets/project-and-worktree-scoping.md): git detection by shelling out to `git rev-parse`; Artifact stores fixed name, root and worktree; strict worktree scope (root plus this worktree); global `--project` override; CLI lists default to scope, API and web UI to unscoped; one database per user; Project and Worktree added to the glossary.
+- [Web UI build and embedding](tickets/web-ui-build.md): htmx plus maud, server-rendered, calling core directly (no generated UI client); htmx via `fetchurl`, hand-written CSS, `include_*` embedding; notectl flake layout with nextest checks. See ADR 0006.
 
 ## Not yet specified
 
@@ -51,7 +52,8 @@ A spec, handed off ready for implementation: design docs in this repo covering a
 - Storage limits and cleanup of old artifacts and revisions.
 - Embedding a JS engine (for example rquickjs) in the nix build, render cost and caching of derived SVG, and Pele's CSS-variable theming inside `<img>`; may need a small spike.
 - Config and data directory locations (including the UI and untrusted-content port flags); how the CLI finds the database (and how the server shares it).
-- OpenAPI toolchain details: `utoipa` vs `aide`, which client generator for Rust and the web UI, and whether htmx makes a generated web client moot.
+- OpenAPI toolchain details: `utoipa` vs `aide`; the web UI no longer uses a generated client (ADR 0006), so only the choice of schema crate and a snapshot test remain.
+- Web UI identity and live refresh: which role/author the UI posts comments as, and how new comments appear (htmx polling vs the long-poll endpoint); likely settled by the prototype.
 
 ## Out of scope
 
