@@ -48,6 +48,8 @@ A spec, handed off ready for implementation: design docs in this repo covering a
 - [Concurrency and conflicts](tickets/concurrency-and-conflicts.md): all writes `BEGIN IMMEDIATE` in WAL with a 5 s busy timeout; optional `edit --base <rev>` gives exit 6 / HTTP 409 on a stale base; Comments on superseded Revisions stay put and are flagged `stale`; `--wait` polls every 500 ms. See ADR 0007.
 - [Config and data locations](tickets/config-and-data-locations.md): database at `$XDG_DATA_HOME/cairn/cairn.db` (`--db` / `CAIRN_DB` override), created on first use; no config file; `serve --port` 7878 and `--content-port` port+1, loopback only; `view` prints a URL without checking the server; UI author `--reviewer-name`; fixed 2 s htmx poll.
 - [Spike: embedded JS engine for Mermaid in nix](tickets/mermaid-engine-spike.md): rquickjs plus Pele builds in nix; init about 75 ms, small render about 1 ms, 300-edge about 55 ms, so no SVG cache; Pele's CSS variables fall back to defaults inside `<img>`; read `PeleError` via `ctx.catch()`. ADR 0002 updated.
+- [Temporary short section ids](tickets/short-section-ids.md): dropped; heading paths stay the only section address, since suffix matching already keeps paths short and every stable-id rule costs more than it saves.
+- [Storage limits and cleanup](tickets/storage-limits-and-cleanup.md): no Revision pruning, only whole-Artifact delete; orphaned blobs removed in the delete transaction with `auto_vacuum=FULL`; no retention or total cap; `list` shows size and age with `--older-than`, `delete` takes several ids.
 
 ## Not yet specified
 
