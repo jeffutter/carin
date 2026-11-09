@@ -48,13 +48,8 @@ A spec, handed off ready for implementation: design docs in this repo covering a
 
 ## Not yet specified
 
-- Temporary short section ids (hashes returned on submit or view) as an alternative to heading paths; whether they are worth it and how they stay stable across edits.
-- Concurrency and conflicts when an agent edits while a reviewer comments.
-- Storage limits and cleanup of old artifacts and revisions.
-- Embedding a JS engine (for example rquickjs) in the nix build, render cost and caching of derived SVG, and Pele's CSS-variable theming inside `<img>`; may need a small spike.
-- Config and data directory locations (including the UI and untrusted-content port flags); how the CLI finds the database (and how the server shares it).
-- OpenAPI toolchain details: `utoipa` vs `aide`; the web UI no longer uses a generated client (ADR 0006), so only the choice of schema crate and a snapshot test remain.
-- Web UI details left by the prototype ticket: the author flag's name and default, and the htmx polling interval.
+- OpenAPI toolchain details: `utoipa` vs `aide`; the web UI no longer uses a generated client (ADR 0006), so only the choice of schema crate and a snapshot test remain. Small enough to settle at build time unless it grows.
+- The htmx polling interval (the author flag moved to Config and data locations).
 
 ## Out of scope
 
