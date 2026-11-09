@@ -38,6 +38,7 @@ A spec, handed off ready for implementation: design docs in this repo covering a
 - [Markdown section addressing](tickets/markdown-section-addressing.md): Sections named by a heading path (suffix match, `#n` for duplicates), including children; replace includes the heading line and makes a new full Revision of the latest; Comment anchors share the path; pulldown-cmark, top-level headings only.
 - [CLI surface and output contract](tickets/cli-surface.md): flat verbs plus a `comment` group; global `--role/--author/--session/--db`; JSON output by default; exit codes 0-5; `edit` whole or `--section`; `delete --yes`; `view` prints a URL; no local-image upload in v1.
 - [JSON API shape](tickets/json-api-shape.md): schema-driven, OpenAPI 3.1 generated from shared Rust types (drift-tested) so clients are generated; `/api/v1` REST mirroring the CLI; body-field attribution; problem+json errors; limit-only lists; long-poll comments; multipart writes, raw-byte reads served as attachments; loopback, no CORS.
+- [Skill generation and drift protection](tickets/skill-generation.md): `cairn skill` prints one SKILL.md built from embedded prose plus a runtime walk of the clap tree (`serve`/`skill` omitted); exit codes from one shared Rust table; drift caught by `cargo test` (prose examples parse, help complete, insta snapshot); version and hash in frontmatter with `skill --check`.
 
 ## Not yet specified
 
