@@ -37,6 +37,7 @@ A spec, handed off ready for implementation: design docs in this repo covering a
 - [Artifact kinds and storage](tickets/kinds-and-storage.md): Kinds markdown, html (a Bundle of files), image, diagram; every Revision a file set stored as content-addressed sqlite BLOBs; markdown embeds image and diagram Artifacts via `cairn:id[@rev]`; fixed size limits. See ADR 0003 and 0004.
 - [Markdown section addressing](tickets/markdown-section-addressing.md): Sections named by a heading path (suffix match, `#n` for duplicates), including children; replace includes the heading line and makes a new full Revision of the latest; Comment anchors share the path; pulldown-cmark, top-level headings only.
 - [CLI surface and output contract](tickets/cli-surface.md): flat verbs plus a `comment` group; global `--role/--author/--session/--db`; JSON output by default; exit codes 0-5; `edit` whole or `--section`; `delete --yes`; `view` prints a URL; no local-image upload in v1.
+- [JSON API shape](tickets/json-api-shape.md): schema-driven, OpenAPI 3.1 generated from shared Rust types (drift-tested) so clients are generated; `/api/v1` REST mirroring the CLI; body-field attribution; problem+json errors; limit-only lists; long-poll comments; multipart writes, raw-byte reads served as attachments; loopback, no CORS.
 
 ## Not yet specified
 
@@ -45,6 +46,7 @@ A spec, handed off ready for implementation: design docs in this repo covering a
 - Storage limits and cleanup of old artifacts and revisions.
 - Embedding a JS engine (for example rquickjs) in the nix build, render cost and caching of derived SVG, and Pele's CSS-variable theming inside `<img>`; may need a small spike.
 - Config and data directory locations; how the CLI finds the database (and how the server shares it).
+- OpenAPI toolchain details: `utoipa` vs `aide`, which client generator for Rust and the web UI, and whether htmx makes a generated web client moot.
 
 ## Out of scope
 
