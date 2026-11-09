@@ -21,6 +21,7 @@ A spec, handed off ready for implementation: design docs in this repo covering a
 - Markdown artifacts should support retrieving and editing by heading section, to save agent tokens.
 - `cairn skill` prints an agent skill: prose plus details extracted from the codebase (clap help), so it cannot drift from the functionality.
 - Web UI should treat agent-supplied HTML as untrusted (iframes, sandboxing).
+- Scoping: besides Session, Artifacts should be scopable by git project. The project name is the last path segment of the root checkout (not a linked worktree's own directory name), and inside a linked worktree the scope covers both the root checkout and the current worktree. Captured late; the Project and worktree scoping ticket settles it and amends earlier decisions as needed.
 - Never use the em dash; write a plain dash.
 
 ## Decisions so far

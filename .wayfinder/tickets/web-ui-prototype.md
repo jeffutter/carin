@@ -3,7 +3,7 @@ title: Prototype the web review UI
 type: prototype
 status: open
 assignee:
-blocked_by: [revisions-and-comment-anchoring, web-safety-model]
+blocked_by: [revisions-and-comment-anchoring, web-safety-model, project-and-worktree-scoping]
 ---
 
 ## Question
