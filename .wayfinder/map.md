@@ -35,9 +35,11 @@ A spec, handed off ready for implementation: design docs in this repo covering a
 - [Agent and reviewer feedback loop](tickets/agent-reviewer-loop.md): polling plus blocking `--wait`; `--since <comment-id>` instead of stored cursors; default view is open Threads on the Agent's Artifacts; `--addresses` posts an auto-reply but only the Reviewer resolves.
 - [Diagram format](tickets/diagram-format.md): Kind `diagram` with format `mermaid` or `svg` in v1 (D2 and Excalidraw later); Mermaid rendered server-side to SVG by Pele in an embedded JS engine, invalid source rejected at submit; both shown via `<img>` from the untrusted origin. See ADR 0002.
 - [Artifact kinds and storage](tickets/kinds-and-storage.md): Kinds markdown, html (a Bundle of files), image, diagram; every Revision a file set stored as content-addressed sqlite BLOBs; markdown embeds image and diagram Artifacts via `cairn:id[@rev]`; fixed size limits. See ADR 0003 and 0004.
+- [Markdown section addressing](tickets/markdown-section-addressing.md): Sections named by a heading path (suffix match, `#n` for duplicates), including children; replace includes the heading line and makes a new full Revision of the latest; Comment anchors share the path; pulldown-cmark, top-level headings only.
 
 ## Not yet specified
 
+- Temporary short section ids (hashes returned on submit or view) as an alternative to heading paths; whether they are worth it and how they stay stable across edits.
 - Concurrency and conflicts when an agent edits while a reviewer comments.
 - Storage limits and cleanup of old artifacts and revisions.
 - Embedding a JS engine (for example rquickjs) in the nix build, render cost and caching of derived SVG, and Pele's CSS-variable theming inside `<img>`; may need a small spike.

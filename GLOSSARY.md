@@ -16,7 +16,10 @@ The set of files that makes up one html Revision: an entry page plus its images 
 A markdown Artifact showing an image or diagram Artifact by pointing at it. The markdown itself holds no image files.
 
 **Comment**
-A remark on one Revision of an Artifact, optionally pointing at a part of it (a line range, or for markdown a section). Written by a Reviewer or an Agent. Never edited after posting. _(Section addressing is still undecided.)_
+A remark on one Revision of an Artifact, optionally pointing at a part of it (a line range, or for markdown a section). Written by a Reviewer or an Agent. Never edited after posting.
+
+**Section**
+A part of a markdown Artifact from one heading to the next heading of the same or higher level, children included. Named by a path of heading texts.
 
 **Thread**
 A root Comment plus the replies to it. Either party may reply. A Thread is open or resolved, and either party may change that.
