@@ -4,7 +4,7 @@
 Something an Agent submits for a Reviewer to read and discuss. It has a stable identity; its current content is its latest Revision.
 
 **Kind**
-The category an Artifact belongs to: markdown, html, image, or diagram. _(Definition still loose: the exact set and boundaries are undecided.)_
+The category an Artifact belongs to: markdown, html, image, or diagram. A diagram also has a format (mermaid or svg). _(The exact set of Kinds, especially for html, is still undecided.)_
 
 **Revision**
 An immutable, complete version of an Artifact's content, produced by each edit. Numbered 1, 2, 3 within its Artifact. Revisions are never changed after creation.

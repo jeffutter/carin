@@ -33,11 +33,13 @@ A spec, handed off ready for implementation: design docs in this repo covering a
 - [Research building Svelte in nix and embedding it in an axum binary](tickets/research-svelte-nix-embed.md): npm hashing options, crane source filtering, rust-embed/axum-embed, SPA output and dev proxy surveyed; nothing built in nix, a few gaps listed.
 - [Research Rust crates for heading-based Markdown sectioning](tickets/research-markdown-sectioning.md): four parser crates probed on one document (three give byte offsets, comrak only line:column); none dedupes duplicate headings; notectl-outline lacks setext, front matter and replace.
 - [Agent and reviewer feedback loop](tickets/agent-reviewer-loop.md): polling plus blocking `--wait`; `--since <comment-id>` instead of stored cursors; default view is open Threads on the Agent's Artifacts; `--addresses` posts an auto-reply but only the Reviewer resolves.
+- [Diagram format](tickets/diagram-format.md): Kind `diagram` with format `mermaid` or `svg` in v1 (D2 and Excalidraw later); Mermaid rendered server-side to SVG by Pele in an embedded JS engine, invalid source rejected at submit; both shown via `<img>` from the untrusted origin. See ADR 0002.
 
 ## Not yet specified
 
 - Concurrency and conflicts when an agent edits while a reviewer comments.
 - Storage limits and cleanup of old artifacts and revisions.
+- Embedding a JS engine (for example rquickjs) in the nix build, render cost and caching of derived SVG, and Pele's CSS-variable theming inside `<img>`; may need a small spike.
 - Config and data directory locations; how the CLI finds the database (and how the server shares it).
 
 ## Out of scope

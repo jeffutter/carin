@@ -1,0 +1,5 @@
+# Render Mermaid on the server with Pele in an embedded JS engine
+
+Cairn renders Mermaid diagrams to SVG at submit time using Pele, a dependency-free JavaScript renderer, run inside a JS engine embedded in the one binary. Only the source is stored; the SVG is derived. A diagram that fails to parse is rejected at submit with Pele's error, so the Agent learns immediately.
+
+We chose this over Mermaid.js in the browser (needs the large library served to every viewer, and gives no submit-time validation) and over `mmdc` (needs Chromium and Node on the host). Pele ran identically under Node and QuickJS with no DOM in a probe. The cost is an embedded JS engine in the binary, and a dependence on Pele's Mermaid compatibility, which is close to Mermaid 12.1.0 but not identical, so some valid Mermaid may be rejected. Whether the engine crate builds in nix is not yet verified; the fallback is browser rendering with Pele, which keeps the same renderer.
