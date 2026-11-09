@@ -30,6 +30,12 @@ Who wrote a Revision or Comment: a free-text name plus a role (agent or reviewer
 **Session**
 An Agent's working session, recorded as an opaque label on its Revisions and Comments so an Agent can find what it produced. Used for filtering, never for access control.
 
+**Project**
+The git repository an Artifact was created in, identified by its root checkout. Named by the last segment of that path. Fixed when the Artifact is created, and used for filtering.
+
+**Worktree**
+A linked checkout of a Project, other than its root checkout. An Artifact made in one records it; in the root checkout there is none.
+
 **Agent**
 The automated party that submits, retrieves, edits and deletes Artifacts, and reads and replies to Comments.
 

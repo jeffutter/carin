@@ -21,7 +21,7 @@ A spec, handed off ready for implementation: design docs in this repo covering a
 - Markdown artifacts should support retrieving and editing by heading section, to save agent tokens.
 - `cairn skill` prints an agent skill: prose plus details extracted from the codebase (clap help), so it cannot drift from the functionality.
 - Web UI should treat agent-supplied HTML as untrusted (iframes, sandboxing).
-- Scoping: besides Session, Artifacts should be scopable by git project. The project name is the last path segment of the root checkout (not a linked worktree's own directory name), and inside a linked worktree the scope covers both the root checkout and the current worktree. Captured late; the Project and worktree scoping ticket settles it and amends earlier decisions as needed.
+- Scoping: besides Session, Artifacts should be scopable by git project. The project name is the last path segment of the root checkout (not a linked worktree's own directory name), and inside a linked worktree the scope covers both the root checkout and the current worktree. Settled by the Project and worktree scoping ticket.
 - Never use the em dash; write a plain dash.
 
 ## Decisions so far
@@ -41,6 +41,8 @@ A spec, handed off ready for implementation: design docs in this repo covering a
 - [JSON API shape](tickets/json-api-shape.md): schema-driven, OpenAPI 3.1 generated from shared Rust types (drift-tested) so clients are generated; `/api/v1` REST mirroring the CLI; body-field attribution; problem+json errors; limit-only lists; long-poll comments; multipart writes, raw-byte reads served as attachments; loopback, no CORS.
 - [Skill generation and drift protection](tickets/skill-generation.md): `cairn skill` prints one SKILL.md built from embedded prose plus a runtime walk of the clap tree (`serve`/`skill` omitted); exit codes from one shared Rust table; drift caught by `cargo test` (prose examples parse, help complete, insta snapshot); version and hash in frontmatter with `skill --check`.
 - [Web safety model for untrusted artifacts](tickets/web-safety-model.md): second loopback port as the untrusted origin; html in `sandbox="allow-scripts"` iframe with a no-network CSP (Bundles self-contained); images and SVG via `<img>` with a script-less sandbox CSP; UI escapes everything and drops raw HTML. Spike-verified in Chromium. See ADR 0005.
+
+- [Project and worktree scoping](tickets/project-and-worktree-scoping.md): git detection by shelling out to `git rev-parse`; Artifact stores fixed name, root and worktree; strict worktree scope (root plus this worktree); global `--project` override; CLI lists default to scope, API and web UI to unscoped; one database per user; Project and Worktree added to the glossary.
 
 ## Not yet specified
 

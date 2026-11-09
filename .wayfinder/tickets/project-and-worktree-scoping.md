@@ -1,8 +1,8 @@
 ---
 title: Project and worktree scoping
 type: grilling
-status: open
-assignee:
+status: closed
+assignee: claude
 blocked_by: []
 ---
 
@@ -31,3 +31,24 @@ This amends decisions already recorded, so check each against the answer:
 - JSON API shape: list filters mirror the CLI.
 - Agent and reviewer feedback loop: the default `comment list` view is scoped by Session.
 - The map's fog item on config and data directory locations: scoping by project is a field inside one database only if the database is shared; confirm that assumption.
+
+## Resolution
+
+Decided with the user (grilling), 2026-11-09. All answers are cheap to reverse; no ADR.
+
+- **Detection**: shell out to `git rev-parse --path-format=absolute --git-common-dir --show-toplevel` from the cwd. Root checkout = parent of the common dir; the project name is its last path segment. The worktree is the toplevel, and counts as linked only when it differs from the root. Not in a repo, `git` missing, or a bare repo: no project scope, never an error. A submodule is its own project.
+- **Key**: the Artifact stores both `project_name` (filtering, display) and `project_root` (absolute path, disambiguates two checkouts with one last segment). `--project <name>` matches the name; if a name maps to several roots, list output shows the roots and `--project-root <path>` narrows. No move or rename handling in v1.
+- **Storage**: `project_name`, `project_root` and `worktree` (null in the root checkout) are nullable columns on the Artifact, fixed at creation. Revisions and Comments carry no project. Session stays on Revisions and Comments as decided.
+- **Worktree semantics**: strict. In a linked worktree the default scope is the project's Artifacts whose worktree is null (root) or this worktree; sibling worktrees are excluded. In the root checkout the default is root Artifacts only (worktree null). `--all-worktrees` widens to the whole project.
+- **Override**: one global `--project <path-or-name>` with env `CAIRN_PROJECT`. `none` or empty disables detection for the call. A value starting with `/` is a root path (replaces the detected root; name from its last segment). Any other value is a name only: accepted on reads as a filter, rejected on writes. No worktree override; the worktree comes from the cwd.
+- **Defaults**: CLI `list` defaults to the detected scope; `--all-projects` drops the project filter, `--all-worktrees` widens to the project. Outside a project it is unscoped. `--mine` and `--session` still combine. `comment list` with a Session is unchanged (Session wins, project ignored); with no Session it falls back to the same scope and takes the same two flags.
+- **API and web UI**: the JSON API list takes `project`, `project_root` and `worktree` filter params and defaults to unscoped (no cwd to detect from); `POST` creation takes `project_name`, `project_root`, `worktree` as body fields. The web UI defaults to all projects, groups or filters by project and labels the worktree; layout is for the prototype ticket.
+- **One database per user**: confirmed. `--db` stays the only override; directory paths stay in the map's fog.
+- **Glossary**: added Project and Worktree.
+
+### Amends
+
+- Revisions, comments and attribution: unchanged for Revisions and Comments; the Artifact gains the three scope columns.
+- CLI surface: new global flag `--project`; `list` and `comment list` gain `--all-projects`, `--all-worktrees`, `--project-root`.
+- JSON API shape: list filters add the three scope params; creation body adds the three fields.
+- Agent and reviewer feedback loop: the sessionless `comment list` default now falls back to project scope.
