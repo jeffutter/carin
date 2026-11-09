@@ -51,6 +51,10 @@ A spec, handed off ready for implementation: design docs in this repo covering a
 - [Temporary short section ids](tickets/short-section-ids.md): dropped; heading paths stay the only section address, since suffix matching already keeps paths short and every stable-id rule costs more than it saves.
 - [Storage limits and cleanup](tickets/storage-limits-and-cleanup.md): no Revision pruning, only whole-Artifact delete; orphaned blobs removed in the delete transaction with `auto_vacuum=FULL`; no retention or total cap; `list` shows size and age with `--older-than`, `delete` takes several ids.
 
+## Spec written
+
+The design docs are in `docs/` (start at `docs/README.md`). They carry the amended results of the tickets above.
+
 ## Not yet specified
 
 - OpenAPI toolchain details: `utoipa` vs `aide`; the web UI no longer uses a generated client (ADR 0006), so only the choice of schema crate and a snapshot test remain. Small enough to settle at build time unless it grows.
