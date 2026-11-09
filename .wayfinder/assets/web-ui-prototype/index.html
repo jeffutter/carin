@@ -1,0 +1,162 @@
+<!doctype html>
+<!--
+PROTOTYPE, THROWAWAY. Question: what should reviewing a cairn artifact look and feel like?
+Three structurally different variants of the list page and the artifact page, switched with ?variant=A|B|C
+(or the bottom bar / arrow keys). All data is fake and in memory; reload to reset. Not in src/.
+Open this file directly in a browser. Routes: #/ (list) and #/a/<id>?rev=<n>. Example: index.html?variant=B#/a/a1
+-->
+<html lang="en"><head><meta charset="utf-8"><title>cairn PROTOTYPE</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+:root{--bg:#fafaf9;--fg:#1c1917;--mut:#78716c;--line:#e7e5e4;--card:#fff;--acc:#2563eb;--agent:#7c3aed;--rev:#059669;--warn:#d97706}
+*{box-sizing:border-box}body{margin:0;font:15px/1.5 system-ui,sans-serif;background:var(--bg);color:var(--fg);padding-bottom:70px}
+a{color:var(--acc);text-decoration:none}a:hover{text-decoration:underline}
+header.top{display:flex;gap:16px;align-items:center;padding:10px 20px;border-bottom:1px solid var(--line);background:var(--card)}
+header.top b{font-size:17px}.pill{display:inline-block;padding:0 8px;border-radius:99px;font-size:12px;border:1px solid var(--line);background:#fff;color:var(--mut)}
+.pill.open{color:var(--warn);border-color:var(--warn)}.pill.agent{color:var(--agent);border-color:var(--agent)}.pill.reviewer{color:var(--rev);border-color:var(--rev)}
+.mut{color:var(--mut)}.small{font-size:12px}
+button{font:inherit;cursor:pointer;border:1px solid var(--line);background:#fff;border-radius:6px;padding:2px 10px}button.pri{background:var(--acc);color:#fff;border-color:var(--acc)}
+textarea{width:100%;font:inherit;border:1px solid var(--line);border-radius:6px;padding:6px}
+.thread{background:var(--card);border:1px solid var(--line);border-left:3px solid var(--warn);border-radius:6px;padding:8px 10px;margin:8px 0}
+.thread.resolved{border-left-color:var(--rev);opacity:.7}.thread.stale{border-style:dashed}
+.cm{margin:4px 0}.cm .who{font-size:12px;color:var(--mut)}.reply{margin-left:14px;border-left:2px solid var(--line);padding-left:8px}
+.anchor{font-size:12px;color:var(--mut);margin-bottom:2px}
+.sec h2,.sec h3{margin:.4em 0 .2em}.ln{display:flex;gap:8px}.ln i{color:#c4c0bb;font:11px monospace;width:22px;text-align:right;cursor:pointer;user-select:none;padding-top:4px}.ln i:hover{color:var(--acc)}.ln p{margin:.25em 0;flex:1}
+.ln.hl,.sec.hl{background:#fef9c3}
+.frame{border:1px solid var(--line);background:#fff;border-radius:6px;overflow:hidden}.frame .bar{font-size:12px;color:var(--mut);background:#f5f5f4;padding:3px 8px;border-bottom:1px solid var(--line)}
+.frame iframe{width:100%;height:240px;border:0}.frame img{max-width:100%;display:block;margin:auto}
+table{border-collapse:collapse;width:100%;background:var(--card)}td,th{padding:7px 10px;border-bottom:1px solid var(--line);text-align:left}
+.wrap{max-width:1180px;margin:0 auto;padding:16px 20px}
+.banner{background:#fffbeb;border:1px solid #fcd34d;border-radius:6px;padding:6px 10px;margin-bottom:10px;font-size:13px}
+#switcher{position:fixed;bottom:14px;left:50%;transform:translateX(-50%);background:#111;color:#fff;border-radius:99px;padding:6px 14px;display:flex;gap:14px;align-items:center;box-shadow:0 4px 16px #0006;z-index:9}
+#switcher button{background:#333;color:#fff;border-color:#555}
+/* A: margin rail */
+.A .row{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:24px;border-top:1px solid var(--line)}
+/* B: outline + inline */
+.B .lay{display:grid;grid-template-columns:230px minmax(0,1fr);gap:24px}.B .side{position:sticky;top:10px;align-self:start;font-size:13px}.B .side a{display:block;padding:2px 0}
+/* C: threads first */
+.C .lay{display:grid;grid-template-columns:400px minmax(0,1fr);gap:20px}.C .tl{display:flex;gap:6px;align-items:center;margin:8px 0 14px;flex-wrap:wrap}
+.C .tl .dot{padding:3px 10px;border-radius:6px;border:1px solid var(--line);background:#fff;font-size:13px}.C .tl .dot.cur{background:var(--fg);color:#fff}
+@media(max-width:800px){.A .row,.B .lay,.C .lay{grid-template-columns:minmax(0,1fr);gap:4px}.B .side,.C .lay>div[style*=sticky]{position:static!important;max-height:none!important}.wrap{padding:10px 12px}.ln p{min-width:0}h2 button.small,h3 button.small{white-space:nowrap}}
+html,body{overflow-x:hidden}pre{white-space:pre-wrap;overflow-wrap:anywhere}.thread,.ln p,textarea{overflow-wrap:anywhere}.tl{max-width:100%}
+</style></head><body><div id="app"></div><div id="switcher"></div>
+<script>
+// ---------- fake data ----------
+const svg=(s)=>'data:image/svg+xml;utf8,'+encodeURIComponent(s);
+const ART=[
+{id:'a1',title:'Auth rewrite plan',kind:'markdown',project:'cairn',wt:null,agent:'claude',session:'s-41',updated:'10 min ago',revs:[
+ {n:1,by:'claude',at:'2h ago',note:'first draft'},{n:2,by:'claude',at:'1h ago',note:'add migration section'},{n:3,by:'claude',at:'10 min ago',note:'address threads on rollout'}],
+ secs:[
+ {path:'Goal',lvl:2,lines:[[1,'Replace the session-cookie auth with signed tokens so the CLI and the web UI share one identity model.']]},
+ {path:'Design',lvl:2,lines:[[3,'Tokens are signed with a per-install key stored beside the database.'],[4,'The key is created on first run with mode 0600.']]},
+ {path:'Design/Token format',lvl:3,lines:[[7,'A token is a versioned JSON claim set: subject, role, expiry.'],[8,'Expiry defaults to 24 hours and is not configurable in v1.']]},
+ {path:'Migration',lvl:2,lines:[[11,'Existing sessions are invalidated on upgrade.'],[12,'No dual-read period; the cost is one forced re-login.']]},
+ {path:'Rollout',lvl:2,lines:[[15,'Ship behind a flag for one release, then remove the flag.'],[16,'(r3) Flag is removed in the same release for local-only installs.']]}]},
+{id:'a2',title:'Dashboard mockup',kind:'html',project:'cairn',wt:'cairn-ui',agent:'claude',session:'s-42',updated:'1 h ago',revs:[{n:1,by:'claude',at:'1h ago',note:'initial'},{n:2,by:'claude',at:'40 min ago',note:'darker header'}],
+ html:'<body style="font:14px sans-serif;margin:0"><div style="background:#1e293b;color:#fff;padding:10px">Dashboard</div><div style="padding:12px;display:flex;gap:10px"><div style="flex:1;background:#e0f2fe;padding:20px">Users: 42</div><div style="flex:1;background:#dcfce7;padding:20px">Uptime 99.9%</div></div><button onclick="this.textContent=\'clicked (script runs)\'">try script</button></body>'},
+{id:'a3',title:'Request flow',kind:'diagram',fmt:'mermaid',project:'herdr',wt:null,agent:'codex',session:'s-9',updated:'yesterday',revs:[{n:1,by:'codex',at:'yesterday',note:'initial'}],
+ img:svg('<svg xmlns="http://www.w3.org/2000/svg" width="420" height="90"><rect x="5" y="25" width="90" height="40" rx="6" fill="#dbeafe" stroke="#2563eb"/><text x="22" y="50" font-size="13">client</text><rect x="165" y="25" width="90" height="40" rx="6" fill="#ede9fe" stroke="#7c3aed"/><text x="188" y="50" font-size="13">axum</text><rect x="325" y="25" width="90" height="40" rx="6" fill="#dcfce7" stroke="#059669"/><text x="345" y="50" font-size="13">sqlite</text><path d="M95 45H165M255 45H325" stroke="#444" marker-end="url(#a)"/></svg>'),
+ src:'flowchart LR\n  client --> axum --> sqlite'},
+{id:'a4',title:'Login screen screenshot',kind:'image',project:'herdr',wt:null,agent:'claude',session:'s-9',updated:'2 days ago',revs:[{n:1,by:'claude',at:'2d ago',note:'initial'}],
+ img:svg('<svg xmlns="http://www.w3.org/2000/svg" width="300" height="150"><rect width="300" height="150" fill="#f1f5f9"/><rect x="70" y="30" width="160" height="26" fill="#fff" stroke="#94a3b8"/><rect x="70" y="66" width="160" height="26" fill="#fff" stroke="#94a3b8"/><rect x="70" y="104" width="160" height="26" rx="4" fill="#2563eb"/></svg>')}];
+let nid=100;
+const CM=[
+{id:1,art:'a1',rev:1,anchor:{sec:'Migration'},who:'jeff',role:'reviewer',text:'Do we really need to invalidate everyone? Seems harsh.',open:false,replies:[{who:'claude',role:'agent',text:'Added a rationale in r2; dual-read costs a second code path.'}]},
+{id:2,art:'a1',rev:2,anchor:{sec:'Rollout'},who:'jeff',role:'reviewer',text:'Why a flag at all for a single-user tool?',open:true,replies:[{who:'claude',role:'agent',text:'Fair. r3 removes it for local-only installs.'}]},
+{id:3,art:'a1',rev:3,anchor:{sec:'Design/Token format',line:8},who:'jeff',role:'reviewer',text:'Make expiry configurable, 24h will annoy me.',open:true,replies:[]},
+{id:4,art:'a1',rev:3,anchor:{sec:'Design',line:4},who:'jeff',role:'reviewer',text:'What happens if the key file is deleted?',open:true,replies:[]},
+{id:5,art:'a1',rev:3,anchor:{},who:'claude',role:'agent',text:'Open question for you: should the key live in the db instead?',open:true,replies:[]},
+{id:6,art:'a2',rev:2,anchor:{},who:'jeff',role:'reviewer',text:'Header is better. Cards need more padding.',open:true,replies:[]},
+{id:7,art:'a3',rev:1,anchor:{},who:'jeff',role:'reviewer',text:'Missing the cache between axum and sqlite.',open:true,replies:[]}];
+
+// ---------- state ----------
+const $=s=>document.querySelector(s);const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const VARS=[['A','Margin rail'],['B','Outline + inline'],['C','Threads first']];
+const P=()=>{const [h,q]=(location.hash.slice(1)||'/').split('?');return{path:h,q:new URLSearchParams(q||'')}};
+const variant=()=>new URLSearchParams(location.search).get('variant')||'A';
+let compose=null,hl=null,filter='open',flt={proj:'',kind:''};
+const art=id=>ART.find(a=>a.id===id);const latest=a=>a.revs[a.revs.length-1].n;
+const threadsOf=a=>CM.filter(c=>c.art===a.id);const openCount=a=>threadsOf(a).filter(c=>c.open).length;
+const anchorTxt=an=>an.sec?(an.sec+(an.line?' , line '+an.line:'')):'whole revision';
+
+// ---------- shared bits ----------
+function thread(c,cur){const stale=c.rev!==cur;
+ return `<div class="thread ${c.open?'':'resolved'} ${stale?'stale':''}" data-th="${c.id}">
+ <div class="anchor">${esc(anchorTxt(c.anchor))} <span class="pill">on r${c.rev}${stale?' - earlier revision':''}</span></div>
+ <div class="cm"><span class="who"><span class="pill ${c.role}">${c.role}</span> ${esc(c.who)}</span><div>${esc(c.text)}</div></div>
+ ${c.replies.map(r=>`<div class="cm reply"><span class="who"><span class="pill ${r.role}">${r.role}</span> ${esc(r.who)}</span><div>${esc(r.text)}</div></div>`).join('')}
+ <div class="small"><button data-act="reply" data-id="${c.id}">Reply</button> <button data-act="toggle" data-id="${c.id}">${c.open?'Resolve':'Reopen'}</button></div>
+ ${compose&&compose.reply===c.id?composer():''}</div>`}
+function composer(){return `<div style="margin-top:6px"><textarea rows="2" id="cbox" placeholder="Write a comment..."></textarea><button class="pri" data-act="post">Post as reviewer</button> <button data-act="cancel">Cancel</button></div>`}
+function newBox(an){return compose&&!compose.reply&&JSON.stringify(compose.anchor)===JSON.stringify(an)?`<div class="thread"><div class="anchor">new comment on ${esc(anchorTxt(an))}</div>${composer()}</div>`:''}
+function lineHtml(a,s,l){const an={sec:s.path,line:l[0]};return `<div class="ln ${hl&&hl.line===l[0]&&hl.sec===s.path?'hl':''}"><i data-act="new" data-sec="${esc(s.path)}" data-line="${l[0]}" title="Comment on line ${l[0]}">${l[0]}</i><p>${esc(l[1])}</p></div>`}
+function heading(s){const t=s.path.split('/').pop();return `<h${s.lvl}>${esc(t)} <button class="small" data-act="new" data-sec="${esc(s.path)}" title="Comment on this section">+ section</button></h${s.lvl}>`}
+function revPicker(a,cur){return `<select data-act="rev">${a.revs.map(r=>`<option value="${r.n}" ${r.n===cur?'selected':''}>r${r.n} - ${esc(r.note)} (${r.at})</option>`).join('')}</select>`}
+function body(a,cur,opts={}){ // content of any Kind; markdown via opts.mdSection renderer
+ if(a.kind==='html')return `<div class="frame"><div class="bar">html Bundle - entry index.html - sandbox="allow-scripts", no network (served from untrusted origin in real build)</div><iframe sandbox="allow-scripts" srcdoc="${esc(a.html)}"></iframe></div>`;
+ if(a.kind==='image')return `<div class="frame"><div class="bar">image - shown via &lt;img&gt;</div><img src="${a.img}"></div>`;
+ if(a.kind==='diagram')return `<div class="frame"><div class="bar">diagram (${a.fmt}) - rendered server-side to SVG, shown via &lt;img&gt;</div><img src="${a.img}"></div><details><summary class="small mut">source</summary><pre>${esc(a.src)}</pre></details>`;
+ return a.secs.map(opts.sec).join('')}
+function banner(a,cur){return cur!==latest(a)?`<div class="banner">Viewing r${cur}, not the latest (r${latest(a)}). Comments are pinned to the revision they were made on. <a href="#/a/${a.id}?rev=${latest(a)}&_=${Date.now()}" data-latest>Go to latest</a></div>`:''}
+function head(a,cur){return `<div style="display:flex;gap:12px;align-items:baseline;flex-wrap:wrap"><h1 style="margin:.2em 0">${esc(a.title)}</h1><span class="pill">${a.kind}${a.fmt?'/'+a.fmt:''}</span><span class="pill">${esc(a.project)}${a.wt?' @ '+esc(a.wt):''}</span>${revPicker(a,cur)}<span class="mut small">by ${esc(a.agent)} - session ${esc(a.session)}</span></div>`}
+const wholeThreads=(a,cur,list)=>list.map(c=>thread(c,cur)).join('');
+
+// ---------- list page ----------
+function listPage(){const v=variant();let rows=ART.filter(a=>(!flt.proj||a.project===flt.proj)&&(!flt.kind||a.kind===flt.kind));
+ const filt=`<div style="margin:10px 0"><select data-act="fproj"><option value="">all projects</option>${[...new Set(ART.map(a=>a.project))].map(p=>`<option ${flt.proj===p?'selected':''}>${p}</option>`).join('')}</select> <select data-act="fkind"><option value="">all kinds</option>${['markdown','html','image','diagram'].map(p=>`<option ${flt.kind===p?'selected':''}>${p}</option>`).join('')}</select> <span class="mut small">(web UI lists unscoped by default, ADR/scoping ticket)</span></div>`;
+ const link=a=>`<a href="#/a/${a.id}">${esc(a.title)}</a>`;
+ if(v==='A')return `<h2>Artifacts</h2>${filt}<table><tr><th>Title</th><th>Kind</th><th>Project</th><th>Rev</th><th>Open threads</th><th>Updated</th></tr>${rows.map(a=>`<tr><td>${link(a)}</td><td>${a.kind}</td><td>${a.project}${a.wt?' @ '+a.wt:''}</td><td>r${latest(a)}</td><td>${openCount(a)?`<span class="pill open">${openCount(a)} open</span>`:'-'}</td><td class="mut">${a.updated}</td></tr>`).join('')}</table>`;
+ if(v==='B'){const g={};rows.forEach(a=>(g[a.project]=g[a.project]||[]).push(a));return `<h2>Projects</h2>${filt}`+Object.entries(g).map(([p,l])=>`<h3>${p} <span class="mut small">${l.length} artifacts</span></h3><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px">${l.map(a=>`<div class="thread" style="border-left-color:var(--line)"><b>${link(a)}</b><div class="small mut">${a.kind} - r${latest(a)} - ${a.updated}</div>${a.wt?`<div class="small mut">worktree ${a.wt}</div>`:''}${openCount(a)?`<span class="pill open">${openCount(a)} open</span>`:''}</div>`).join('')}</div>`).join('')}
+ return `<h2>Needs your attention</h2>${filt}<p class="mut small">Inbox of open threads across artifacts, newest first; agent replies waiting on you float up.</p>`+CM.filter(c=>c.open&&rows.includes(art(c.art))).reverse().map(c=>{const a=art(c.art);return `<div class="thread"><div class="anchor"><a href="#/a/${a.id}?rev=${c.rev}">${esc(a.title)}</a> - ${esc(anchorTxt(c.anchor))} - r${c.rev}</div><div>${esc(c.text)}</div>${c.replies.length?`<div class="small mut">${c.replies.length} repl${c.replies.length>1?'ies':'y'}, last by ${c.replies.at(-1).who}</div>`:''}</div>`}).join('')+`<h3>Artifacts without open threads</h3>`+rows.filter(a=>!openCount(a)).map(a=>`<div>${link(a)} <span class="mut small">${a.kind} r${latest(a)}</span></div>`).join('')}
+
+// ---------- artifact page variants ----------
+function pageA(a,cur){ // margin rail: each section is a grid row, threads sit beside it
+ const T=threadsOf(a);const here=T.filter(c=>c.rev===cur),other=T.filter(c=>c.rev!==cur);
+ let main;
+ if(a.kind==='markdown')main=a.secs.map(s=>{const ts=here.filter(c=>c.anchor.sec===s.path);
+  return `<div class="row"><div class="sec ${hl&&hl.sec===s.path&&!hl.line?'hl':''}">${heading(s)}${s.lines.map(l=>lineHtml(a,s,l)).join('')}</div><div>${ts.map(c=>thread(c,cur)).join('')}${newBox({sec:s.path})}${compose&&compose.anchor&&compose.anchor.sec===s.path&&compose.anchor.line?newBox(compose.anchor):''}</div></div>`}).join('')
+  +`<div class="row"><div></div><div><h4>Whole-revision comments</h4>${here.filter(c=>!c.anchor.sec).map(c=>thread(c,cur)).join('')}${newBox({})}<button data-act="new">+ comment on whole revision</button></div></div>`;
+ else main=`<div class="row"><div>${body(a,cur)}</div><div>${here.map(c=>thread(c,cur)).join('')}${newBox({})}<button data-act="new">+ comment</button></div></div>`;
+ return `${head(a,cur)}${banner(a,cur)}${main}${other.length?`<details><summary class="mut">${other.length} comment(s) on other revisions</summary>${other.map(c=>thread(c,cur)).join('')}</details>`:''}`}
+
+function pageB(a,cur){ // outline sidebar, threads inline under the block they anchor to
+ const T=threadsOf(a);const here=T.filter(c=>c.rev===cur);
+ const side=`<div class="side"><b>Revisions</b>${a.revs.slice().reverse().map(r=>`<a href="#/a/${a.id}?rev=${r.n}" style="${r.n===cur?'font-weight:700':''}">r${r.n} ${esc(r.note)} <span class="mut">${T.filter(c=>c.rev===r.n&&c.open).length?'('+T.filter(c=>c.rev===r.n&&c.open).length+' open)':''}</span></a>`).join('')}
+ ${a.kind==='markdown'?`<hr><b>Outline</b>${a.secs.map(s=>`<a data-act="jump" data-sec="${esc(s.path)}" href="#" style="padding-left:${(s.lvl-2)*12}px">${esc(s.path.split('/').pop())} ${here.filter(c=>c.open&&c.anchor.sec===s.path).length?`<span class="pill open">${here.filter(c=>c.open&&c.anchor.sec===s.path).length}</span>`:''}</a>`).join('')}`:''}
+ <hr><div class="mut">${here.filter(c=>c.open).length} open / ${here.length} threads on r${cur}</div></div>`;
+ let main;
+ if(a.kind==='markdown')main=a.secs.map(s=>`<div class="sec" id="sec-${esc(s.path)}">${heading(s)}${s.lines.map(l=>lineHtml(a,s,l)+here.filter(c=>c.anchor.sec===s.path&&c.anchor.line===l[0]).map(c=>thread(c,cur)).join('')+(compose&&!compose.reply&&compose.anchor.sec===s.path&&compose.anchor.line===l[0]?newBox(compose.anchor):'')).join('')}${here.filter(c=>c.anchor.sec===s.path&&!c.anchor.line).map(c=>thread(c,cur)).join('')}${compose&&!compose.reply&&compose.anchor.sec===s.path&&!compose.anchor.line?newBox(compose.anchor):''}</div>`).join('')+`<h4>Whole revision</h4>${here.filter(c=>!c.anchor.sec).map(c=>thread(c,cur)).join('')}${newBox({})}<button data-act="new">+ comment</button>`;
+ else main=body(a,cur)+`<h4>Comments</h4>${here.map(c=>thread(c,cur)).join('')}${newBox({})}<button data-act="new">+ comment</button>`;
+ return `${head(a,cur)}${banner(a,cur)}<div class="lay"><div>${side}</div><div>${main}</div></div>`}
+
+function pageC(a,cur){ // threads first: revision timeline on top, thread list left, compact preview right
+ const T=threadsOf(a);const shown=T.filter(c=>filter==='all'||(filter==='open'?c.open:!c.open));
+ const tl=`<div class="tl">${a.revs.map(r=>`<a class="dot ${r.n===cur?'cur':''}" href="#/a/${a.id}?rev=${r.n}">r${r.n} <span class="small">${esc(r.note)}</span> ${T.filter(c=>c.rev===r.n&&c.open).length?'<span class="pill open">'+T.filter(c=>c.rev===r.n&&c.open).length+'</span>':''}</a>`).join(' - ')}</div>`;
+ const left=`<div><div style="margin-bottom:6px">${['open','resolved','all'].map(f=>`<button data-act="filt" data-id="${f}" ${filter===f?'class="pri"':''}>${f}</button>`).join(' ')} <button data-act="new">+ new</button></div>${compose&&!compose.reply?newBox(compose.anchor):''}${shown.map(c=>thread(c,cur).replace('class="thread','data-jump="1" class="thread')).join('')||'<p class="mut">none</p>'}</div>`;
+ const right=`<div style="position:sticky;top:10px;align-self:start;max-height:90vh;overflow:auto"><div class="mut small">Preview of r${cur}. Click a thread to highlight its anchor; click a line number or section to start a new thread.</div>${body(a,cur,{sec:s=>`<div class="sec ${hl&&hl.sec===s.path&&!hl.line?'hl':''}">${heading(s)}${s.lines.map(l=>lineHtml(a,s,l)).join('')}</div>`})}</div>`;
+ return `${head(a,cur)}${banner(a,cur)}${tl}<div class="lay">${left}${right}</div>`}
+
+// ---------- render ----------
+function render(){const {path,q}=P();let h='';
+ const v=variant();
+ if(path.startsWith('/a/')){const a=art(path.split('/')[2]);const cur=+(q.get('rev')||latest(a));
+  h=`<a href="#/">&larr; all artifacts</a>`+({A:pageA,B:pageB,C:pageC}[v])(a,cur)}else h=listPage();
+ $('#app').innerHTML=`<header class="top"><b>cairn</b><span class="mut">review UI PROTOTYPE - fake data</span><span class="mut small">comments post as: jeff (reviewer)</span></header><div class="wrap ${v}">${h}</div>`;
+ $('#switcher').innerHTML=`<button data-act="prev">&larr;</button><span>${v} (${VARS.find(x=>x[0]===v)[1]})</span><button data-act="next">&rarr;</button>`}
+function setVariant(d){const i=VARS.findIndex(x=>x[0]===variant());const n=VARS[(i+d+3)%3][0];const u=new URL(location);u.searchParams.set('variant',n);history.replaceState(null,'',u);render()}
+document.addEventListener('keydown',e=>{if(/TEXTAREA|INPUT|SELECT/.test(e.target.tagName))return;if(e.key==='ArrowLeft')setVariant(-1);if(e.key==='ArrowRight')setVariant(1)});
+addEventListener('hashchange',()=>{compose=null;hl=null;render()});
+document.addEventListener('click',e=>{const t=e.target.closest('[data-act],[data-jump]');if(!t){return}
+ const {path,q}=P();const a=path.startsWith('/a/')?art(path.split('/')[2]):null;const cur=a?+(q.get('rev')||latest(a)):0;const act=t.dataset.act;
+ if(t.dataset.jump&&!['reply','toggle','post','cancel'].includes(act)){const c=CM.find(c=>c.id==t.closest('[data-th]').dataset.th);hl=c.anchor.sec?{sec:c.anchor.sec,line:c.anchor.line}:null;render();return}
+ if(act==='prev')return setVariant(-1);if(act==='next')return setVariant(1);
+ if(act==='new'){compose={anchor:t.dataset.sec?{sec:t.dataset.sec,...(t.dataset.line?{line:+t.dataset.line}:{})}:{}};render();$('#cbox')&&$('#cbox').focus()}
+ if(act==='reply'){compose={reply:+t.dataset.id};render();$('#cbox').focus()}
+ if(act==='cancel'){compose=null;render()}
+ if(act==='toggle'){const c=CM.find(c=>c.id==t.dataset.id);c.open=!c.open;render()}
+ if(act==='filt'){filter=t.dataset.id;render()}
+ if(act==='jump'){e.preventDefault();hl={sec:t.dataset.sec};render();document.getElementById('sec-'+t.dataset.sec)?.scrollIntoView()}
+ if(act==='post'){const txt=$('#cbox').value.trim();if(txt){if(compose.reply)CM.find(c=>c.id===compose.reply).replies.push({who:'jeff',role:'reviewer',text:txt});else CM.push({id:nid++,art:a.id,rev:cur,anchor:compose.anchor,who:'jeff',role:'reviewer',text:txt,open:true,replies:[]})}compose=null;render()}});
+document.addEventListener('change',e=>{const t=e.target,act=t.dataset.act;if(act==='rev'){const {path}=P();location.hash=path+'?rev='+t.value}if(act==='fproj'){flt.proj=t.value;render()}if(act==='fkind'){flt.kind=t.value;render()}});
+render();
+</script></body></html>
