@@ -27,6 +27,7 @@ A spec, handed off ready for implementation: design docs in this repo covering a
 <!-- one line per closed ticket -->
 
 - [Research diagram formats and safe browser rendering](tickets/research-diagram-formats.md): six formats surveyed (Mermaid, SVG, Excalidraw, Graphviz, D2, PlantUML) with rendering and security notes; LLM authorability and a few renderer details unconfirmed.
+- [Research iframe sandboxing and CSP for untrusted agent HTML](tickets/research-iframe-sandbox.md): sandbox tokens, srcdoc vs URL, CSP, separate origin/port and axum surveyed; several points marked not verified (srcdoc CSP inheritance, cross-port cookies, images in opaque origin, dual axum listeners).
 
 ## Not yet specified
 
