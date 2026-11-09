@@ -1,0 +1,10 @@
+[package]
+name = "mermaid-engine-spike"
+version = "0.0.0"
+edition = "2024"
+
+[dependencies]
+rquickjs = "0.14"
+
+[profile.release]
+opt-level = 3

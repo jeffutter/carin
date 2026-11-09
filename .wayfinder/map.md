@@ -47,6 +47,7 @@ A spec, handed off ready for implementation: design docs in this repo covering a
 - [Prototype the web review UI](tickets/web-ui-prototype.md): markdown page is the outline sidebar with inline Threads (no revision list; the header dropdown is enough); list is a table; open Threads from other Revisions show dashed, resolved ones are hidden; single column on phones; UI author is a flag, live refresh is htmx polling.
 - [Concurrency and conflicts](tickets/concurrency-and-conflicts.md): all writes `BEGIN IMMEDIATE` in WAL with a 5 s busy timeout; optional `edit --base <rev>` gives exit 6 / HTTP 409 on a stale base; Comments on superseded Revisions stay put and are flagged `stale`; `--wait` polls every 500 ms. See ADR 0007.
 - [Config and data locations](tickets/config-and-data-locations.md): database at `$XDG_DATA_HOME/cairn/cairn.db` (`--db` / `CAIRN_DB` override), created on first use; no config file; `serve --port` 7878 and `--content-port` port+1, loopback only; `view` prints a URL without checking the server; UI author `--reviewer-name`; fixed 2 s htmx poll.
+- [Spike: embedded JS engine for Mermaid in nix](tickets/mermaid-engine-spike.md): rquickjs plus Pele builds in nix; init about 75 ms, small render about 1 ms, 300-edge about 55 ms, so no SVG cache; Pele's CSS variables fall back to defaults inside `<img>`; read `PeleError` via `ctx.catch()`. ADR 0002 updated.
 
 ## Not yet specified
 
