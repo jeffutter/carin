@@ -45,6 +45,7 @@ A spec, handed off ready for implementation: design docs in this repo covering a
 - [Project and worktree scoping](tickets/project-and-worktree-scoping.md): git detection by shelling out to `git rev-parse`; Artifact stores fixed name, root and worktree; strict worktree scope (root plus this worktree); global `--project` override; CLI lists default to scope, API and web UI to unscoped; one database per user; Project and Worktree added to the glossary.
 - [Web UI build and embedding](tickets/web-ui-build.md): htmx plus maud, server-rendered, calling core directly (no generated UI client); htmx via `fetchurl`, hand-written CSS, `include_*` embedding; notectl flake layout with nextest checks. See ADR 0006.
 - [Prototype the web review UI](tickets/web-ui-prototype.md): markdown page is the outline sidebar with inline Threads (no revision list; the header dropdown is enough); list is a table; open Threads from other Revisions show dashed, resolved ones are hidden; single column on phones; UI author is a flag, live refresh is htmx polling.
+- [Concurrency and conflicts](tickets/concurrency-and-conflicts.md): all writes `BEGIN IMMEDIATE` in WAL with a 5 s busy timeout; optional `edit --base <rev>` gives exit 6 / HTTP 409 on a stale base; Comments on superseded Revisions stay put and are flagged `stale`; `--wait` polls every 500 ms. See ADR 0007.
 
 ## Not yet specified
 

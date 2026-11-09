@@ -31,3 +31,5 @@ Decided with the user (grilling), 2026-11-09.
 - **Delete**: `delete <id> --yes`, no prompt, no TTY detection.
 - **View**: `view <id>[@rev]` prints `<base>/a/<id>[@rev]`; base from `--url`, `CAIRN_URL`, then `http://127.0.0.1:7878`, the same default as `serve --listen`. It does not open a browser.
 - **Handed on**: JSON API shape (operations to mirror, the `/a/<id>` route and default port); Skill generation (the clap tree it walks).
+
+- **Amended** by [Concurrency and conflicts](concurrency-and-conflicts.md): `edit` gains optional `--base <rev>`, and exit code 6 means conflict (stale base). The "No base-Revision check" line above no longer holds.
