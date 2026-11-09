@@ -39,6 +39,7 @@ A spec, handed off ready for implementation: design docs in this repo covering a
 - [CLI surface and output contract](tickets/cli-surface.md): flat verbs plus a `comment` group; global `--role/--author/--session/--db`; JSON output by default; exit codes 0-5; `edit` whole or `--section`; `delete --yes`; `view` prints a URL; no local-image upload in v1.
 - [JSON API shape](tickets/json-api-shape.md): schema-driven, OpenAPI 3.1 generated from shared Rust types (drift-tested) so clients are generated; `/api/v1` REST mirroring the CLI; body-field attribution; problem+json errors; limit-only lists; long-poll comments; multipart writes, raw-byte reads served as attachments; loopback, no CORS.
 - [Skill generation and drift protection](tickets/skill-generation.md): `cairn skill` prints one SKILL.md built from embedded prose plus a runtime walk of the clap tree (`serve`/`skill` omitted); exit codes from one shared Rust table; drift caught by `cargo test` (prose examples parse, help complete, insta snapshot); version and hash in frontmatter with `skill --check`.
+- [Web safety model for untrusted artifacts](tickets/web-safety-model.md): second loopback port as the untrusted origin; html in `sandbox="allow-scripts"` iframe with a no-network CSP (Bundles self-contained); images and SVG via `<img>` with a script-less sandbox CSP; UI escapes everything and drops raw HTML. Spike-verified in Chromium. See ADR 0005.
 
 ## Not yet specified
 
@@ -46,7 +47,7 @@ A spec, handed off ready for implementation: design docs in this repo covering a
 - Concurrency and conflicts when an agent edits while a reviewer comments.
 - Storage limits and cleanup of old artifacts and revisions.
 - Embedding a JS engine (for example rquickjs) in the nix build, render cost and caching of derived SVG, and Pele's CSS-variable theming inside `<img>`; may need a small spike.
-- Config and data directory locations; how the CLI finds the database (and how the server shares it).
+- Config and data directory locations (including the UI and untrusted-content port flags); how the CLI finds the database (and how the server shares it).
 - OpenAPI toolchain details: `utoipa` vs `aide`, which client generator for Rust and the web UI, and whether htmx makes a generated web client moot.
 
 ## Out of scope

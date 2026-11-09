@@ -35,3 +35,6 @@ The automated party that submits, retrieves, edits and deletes Artifacts, and re
 
 **Reviewer**
 The human who views, lists, comments on and deletes Artifacts.
+
+**Untrusted origin**
+The separate address from which all Agent-supplied content is served, so it can never act as the review UI.
