@@ -1034,6 +1034,23 @@ mod comments {
             code(&db, &["comment", "add", &id, "x", "--section", "Nope"]),
             Some(4)
         );
+        // mixed locators are rejected
+        assert_eq!(
+            code(
+                &db,
+                &[
+                    "comment",
+                    "add",
+                    &id,
+                    "x",
+                    "--section",
+                    "A > B",
+                    "--lines",
+                    "7-8"
+                ]
+            ),
+            Some(2)
+        );
         assert_eq!(code(&db, &["comment", "add", "nope", "x"]), Some(3));
         assert_eq!(code(&db, &["comment", "add", &id, ""]), Some(2));
     }

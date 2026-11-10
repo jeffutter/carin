@@ -250,6 +250,11 @@ fn resolve_locator(
     if locator.lines.is_none() && locator.section.is_none() {
         return Ok(stored);
     }
+    if locator.lines.is_some() && locator.section.is_some() {
+        return Err(Error::Usage(
+            "--lines and --section are mutually exclusive; give one locator".into(),
+        ));
+    }
     let is_markdown = kind == "markdown";
     let is_text = is_markdown || (kind == "diagram" && format == Some("mermaid"));
     if !is_text {
