@@ -40,6 +40,8 @@
   });
 
   document.addEventListener("htmx:responseError", function (e) {
+    // A failed background poll retries on the next tick; do not interrupt.
+    if (isPoll(e)) return;
     window.alert(e.detail.xhr.responseText || "request failed");
   });
 })();

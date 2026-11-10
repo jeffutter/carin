@@ -110,23 +110,31 @@ fn highest_comment_id(conn: &Connection) -> Result<i64, Error> {
 }
 
 /// A cheap fingerprint of everything the review UI shows for one Artifact:
-/// changes whenever a Comment is added (the `--wait` signal,
-/// [`highest_comment_id`]), a Thread is resolved or reopened (which adds no
-/// Comment), or a Revision is added. Equal markers mean nothing to redraw.
+/// changes whenever a Comment is added to it, a Thread is resolved or reopened
+/// (which adds no Comment), or a Revision is added. Scoped to `artifact`, so
+/// activity on other Artifacts never changes it. The resolved Threads are
+/// listed by id rather than summed, so no two distinct sets share a marker.
 pub fn change_marker(conn: &Connection, artifact: &str) -> Result<String, Error> {
     let tx = conn.unchecked_transaction().map_err(db_err)?;
-    let highest = highest_comment_id(&tx)?;
     let latest = latest_revision(&tx, artifact)?;
-    // Root ids are unique, so toggling any one Thread changes the sum.
-    let resolved: i64 = tx
+    let newest: i64 = tx
         .query_row(
-            "SELECT COALESCE(SUM(id), 0) FROM comments
-             WHERE artifact_id = ?1 AND parent_id IS NULL AND status = 'resolved'",
+            "SELECT COALESCE(MAX(id), 0) FROM comments WHERE artifact_id = ?1",
             [artifact],
             |r| r.get(0),
         )
         .map_err(db_err)?;
-    Ok(format!("{highest}-{resolved}-{latest}"))
+    let resolved: String = tx
+        .query_row(
+            "SELECT COALESCE(group_concat(id, ','), '') FROM
+               (SELECT id FROM comments
+                WHERE artifact_id = ?1 AND parent_id IS NULL AND status = 'resolved'
+                ORDER BY id)",
+            [artifact],
+            |r| r.get(0),
+        )
+        .map_err(db_err)?;
+    Ok(format!("{newest}-{resolved}-{latest}"))
 }
 
 fn latest_revision(conn: &Connection, artifact: &str) -> Result<i64, Error> {
@@ -620,4 +628,92 @@ fn load_threads(
             .map_err(db_err)?;
     }
     Ok(threads)
+}
+
+#[cfg(test)]
+mod marker_tests {
+    use super::*;
+
+    fn setup() -> (tempfile::TempDir, Connection) {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = crate::db::open(&dir.path().join("t.db")).unwrap();
+        conn.execute("PRAGMA foreign_keys = OFF", []).unwrap();
+        for a in ["A", "B"] {
+            conn.execute(
+                "INSERT INTO revisions (artifact_id, number, author, role, created_at)
+                 VALUES (?1, 1, 'x', 'agent', '')",
+                [a],
+            )
+            .unwrap();
+        }
+        (dir, conn)
+    }
+
+    fn root(conn: &Connection, artifact: &str, status: &str) -> i64 {
+        conn.execute(
+            "INSERT INTO comments (artifact_id, revision, author, role, body, created_at, status)
+             VALUES (?1, 1, 'x', 'agent', 'b', '', ?2)",
+            rusqlite::params![artifact, status],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    fn set(conn: &Connection, id: i64, status: &str) {
+        conn.execute(
+            "UPDATE comments SET status = ?1 WHERE id = ?2",
+            rusqlite::params![status, id],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn other_artifact_does_not_change_marker() {
+        let (_d, c) = setup();
+        let before = change_marker(&c, "A").unwrap();
+        root(&c, "B", "open");
+        assert_eq!(change_marker(&c, "A").unwrap(), before);
+    }
+
+    #[test]
+    fn swapping_resolved_sets_does_not_collide() {
+        let (_d, c) = setup();
+        let (t1, t2, t3) = (
+            root(&c, "A", "resolved"),
+            root(&c, "A", "resolved"),
+            root(&c, "A", "open"),
+        );
+        let before = change_marker(&c, "A").unwrap();
+        set(&c, t1, "open");
+        set(&c, t2, "open");
+        set(&c, t3, "resolved");
+        assert_ne!(change_marker(&c, "A").unwrap(), before);
+    }
+
+    #[test]
+    fn changes_on_comment_resolve_reopen_and_revision() {
+        let (_d, c) = setup();
+        let m0 = change_marker(&c, "A").unwrap();
+        let t = root(&c, "A", "open");
+        let m1 = change_marker(&c, "A").unwrap();
+        set(&c, t, "resolved");
+        let m2 = change_marker(&c, "A").unwrap();
+        set(&c, t, "open");
+        let m3 = change_marker(&c, "A").unwrap();
+        c.execute(
+            "INSERT INTO revisions (artifact_id, number, author, role, created_at)
+             VALUES ('A', 2, 'x', 'agent', '')",
+            [],
+        )
+        .unwrap();
+        let m4 = change_marker(&c, "A").unwrap();
+        let all = [m0, m1, m2, m3, m4];
+        for i in 0..all.len() {
+            for j in i + 1..all.len() {
+                if !(i == 1 && j == 3) {
+                    assert_ne!(all[i], all[j], "{i} vs {j}");
+                }
+            }
+        }
+    }
 }
