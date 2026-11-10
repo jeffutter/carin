@@ -63,9 +63,19 @@
           inherit cargoArtifacts;
           doCheck = false; # nextest runs in checks.nextest
         });
+        # The agent skill: a directory holding SKILL.md, so another flake can
+        # link it as a whole skill directory (e.g. ~/.claude/skills/cairn).
+        skill = pkgs.runCommand "cairn-skill" { nativeBuildInputs = [ cairn ]; } ''
+          mkdir -p $out
+          cairn skill > $out/SKILL.md
+          cairn skill --check $out/SKILL.md
+        '';
       in
       {
-        packages.default = cairn;
+        packages = {
+          default = cairn;
+          inherit skill;
+        };
 
         checks = {
           build = cairn;
