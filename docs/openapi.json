@@ -1498,6 +1498,13 @@
             "properties": {
               "created_at": {
                 "type": "string"
+              },
+              "format": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Diagram format (`mermaid` or `svg`); null for other Kinds."
               }
             }
           }
@@ -1614,13 +1621,6 @@
             "type": "integer",
             "format": "int64",
             "description": "Sum of the sizes of the distinct blobs any Revision of the Artifact\nreferences: what the Artifact costs in the database file."
-          },
-          "format": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Diagram format (`mermaid` or `svg`); null for other Kinds."
           },
           "id": {
             "type": "string"

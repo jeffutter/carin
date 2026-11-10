@@ -51,7 +51,7 @@ A write carrying an `Origin` header other than the request's own `Host` is a 403
 ## Reads and lists
 
 - Lists use the same filters as the CLI list (`kind`, `session`, `author`, `open`, `older_than`, `limit`) plus `project` (a name), `project_root` and `worktree` (absolute paths; `worktree` shows the root's Artifacts plus that Worktree's, as the CLI does from inside one; `worktree` without `project` or `project_root` is a 400, since a Worktree belongs to a Project). An unknown `kind` is a 400. Unscoped by default, since there is no cwd to detect from. There is no `mine`; use `session`.
-- Response shape `{ "items": [...] }`. Default limit 50, maximum 200 (a limit outside 1 to 200 is a 422, not clamped), no cursor in v1. A single Artifact (`GET /artifacts/{id}`) is its list row plus `created_at`; every list row carries the diagram `format` (`mermaid` or `svg`, null for other Kinds); the CLI `list` prints the same rows under `{ "artifacts": [...] }`.
+- Response shape `{ "items": [...] }`. Default limit 50, maximum 200 (a limit outside 1 to 200 is a 422, not clamped), no cursor in v1. A single Artifact (`GET /artifacts/{id}`) is its list row plus `format` and `created_at`; the CLI `list` prints the same rows under `{ "artifacts": [...] }`.
 - Each Artifact in a list carries stored bytes and last-updated time.
 - File bytes are served from the UI port only as downloads, with `Content-Disposition: attachment` and `X-Content-Type-Options: nosniff`. Rendering untrusted html and svg inline is the content origin's job ([web-ui.md](web-ui.md#untrusted-content)), not this route's.
 
