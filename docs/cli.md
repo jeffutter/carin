@@ -55,7 +55,7 @@ One Rust table (an enum with descriptions) drives the CLI error handling and the
 
 ### submit
 
-`submit <path|dir|->` creates an Artifact and its Revision 1. A directory is an html Bundle and needs `index.html`. Stdin (`-`) needs `--kind` and `--name`. Otherwise `--kind` is inferred from the extension ([data-model.md](data-model.md#kinds-and-files)); `--format` for diagrams. Local images are not uploaded or rewritten: submit an image as its own Artifact and embed it as `cairn:<id>`. There is no inline-string flag. Prints the new `abc123@1`.
+`submit <path|dir|->` creates an Artifact and its Revision 1. A directory is an html Bundle and needs `index.html` at its root; a single `.html` file is stored as `index.html`. Symlinks are rejected. `edit` accepts a directory for an html Artifact and resubmits the whole Bundle; unchanged files share blobs. Stdin (`-`) needs `--kind` and `--name`. Otherwise `--kind` is inferred from the extension ([data-model.md](data-model.md#kinds-and-files)); `--format` for diagrams. Local images are not uploaded or rewritten: submit an image as its own Artifact and embed it as `cairn:<id>`. There is no inline-string flag. Prints the new `abc123@1`.
 
 ### edit
 
@@ -67,7 +67,7 @@ One Rust table (an enum with descriptions) drives the CLI error handling and the
 
 ### get and outline
 
-`get <id>[@rev]` prints markdown or diagram source. `image` and `html` need `--out <dir>` and print a file list as JSON. `--section` is markdown only. `outline <id>[@rev]` prints `{"sections": [{"path": "A > B", "level": 2, "bytes": 120}]}`, one entry per heading in document order; `bytes` is the Section's size including children. A path that is not unique as a suffix carries `#n` (`Notes#2`) so it can be passed straight to `--section`. In a path, `\`, `>` and a `#` before trailing digits are backslash-escaped (`Issue \#12`, `A \> B`) so every printed path resolves to its own Section. `edit <id> --section "A > B" <path|->` replaces that Section; the new text must start with a heading line of the same level, contain no shallower heading, and not change the structure of the rest of the document (e.g. an unclosed code fence). `--base` works with it.
+`get <id>[@rev]` prints markdown or diagram source. `image` and `html` need `--out <dir>` (exit 2 without it), write each file at its relative path and print `{"files": [{"path", "media_type", "size"}]}`; `--out` is rejected for other Kinds. `--section` is markdown only. `outline <id>[@rev]` prints `{"sections": [{"path": "A > B", "level": 2, "bytes": 120}]}`, one entry per heading in document order; `bytes` is the Section's size including children. A path that is not unique as a suffix carries `#n` (`Notes#2`) so it can be passed straight to `--section`. In a path, `\`, `>` and a `#` before trailing digits are backslash-escaped (`Issue \#12`, `A \> B`) so every printed path resolves to its own Section. `edit <id> --section "A > B" <path|->` replaces that Section; the new text must start with a heading line of the same level, contain no shallower heading, and not change the structure of the rest of the document (e.g. an unclosed code fence). `--base` works with it.
 
 ### list
 

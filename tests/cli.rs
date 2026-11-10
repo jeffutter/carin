@@ -2074,3 +2074,220 @@ mod scoping {
         );
     }
 }
+
+mod bundles {
+    use super::cairn;
+    use std::path::{Path, PathBuf};
+
+    fn run(db: &Path, args: &[&str]) -> std::process::Output {
+        let mut c = cairn();
+        for v in [
+            "CAIRN_ROLE",
+            "CAIRN_AGENT",
+            "CAIRN_SESSION",
+            "CLAUDE_CODE_SESSION_ID",
+            "CAIRN_DB",
+            "CAIRN_PROJECT",
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_INDEX_FILE",
+        ] {
+            c.env_remove(v);
+        }
+        c.current_dir(std::env::temp_dir());
+        c.arg("--db").arg(db).args(args);
+        c.output().unwrap()
+    }
+
+    fn code(db: &Path, args: &[&str]) -> Option<i32> {
+        run(db, args).status.code()
+    }
+
+    fn ok(db: &Path, args: &[&str]) -> serde_json::Value {
+        let o = run(db, args);
+        assert_eq!(
+            o.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        serde_json::from_slice(&o.stdout).unwrap()
+    }
+
+    fn site(root: &Path) -> PathBuf {
+        let s = root.join("site");
+        std::fs::create_dir_all(s.join("css")).unwrap();
+        std::fs::write(s.join("index.html"), "<h1>hi</h1>").unwrap();
+        std::fs::write(s.join("css/a.css"), "body{}").unwrap();
+        std::fs::write(s.join("logo.png"), [0x89, b'P', b'N', b'G', 1, 2, 3]).unwrap();
+        s
+    }
+
+    fn blobs(db: &Path) -> i64 {
+        rusqlite::Connection::open(db)
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM blobs", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    fn s(p: &Path) -> &str {
+        p.to_str().unwrap()
+    }
+
+    #[test]
+    fn directory_without_entry_page_exits_four() {
+        let d = tempfile::tempdir().unwrap();
+        let db = d.path().join("c.db");
+        let dir = d.path().join("nosite");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("page.html"), "x").unwrap();
+        assert_eq!(code(&db, &["submit", s(&dir)]), Some(4));
+    }
+
+    #[test]
+    fn too_many_files_and_oversize_name_the_limit() {
+        let d = tempfile::tempdir().unwrap();
+        let db = d.path().join("c.db");
+        let dir = d.path().join("many");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("index.html"), "x").unwrap();
+        for i in 0..200 {
+            std::fs::write(dir.join(format!("f{i}.txt")), "x").unwrap();
+        }
+        let o = run(&db, &["submit", s(&dir)]);
+        assert_eq!(o.status.code(), Some(4));
+        assert!(String::from_utf8_lossy(&o.stderr).contains("200 files"));
+
+        let big = d.path().join("big");
+        std::fs::create_dir(&big).unwrap();
+        std::fs::write(big.join("index.html"), "x").unwrap();
+        for i in 0..3 {
+            std::fs::write(big.join(format!("b{i}.txt")), vec![b'a'; 9 * 1024 * 1024]).unwrap();
+        }
+        let o = run(&db, &["submit", s(&big)]);
+        assert_eq!(o.status.code(), Some(4));
+        assert!(String::from_utf8_lossy(&o.stderr).contains("25 MiB"));
+    }
+
+    #[test]
+    fn svg_and_disallowed_types_are_rejected() {
+        let d = tempfile::tempdir().unwrap();
+        let db = d.path().join("c.db");
+        let svg = d.path().join("x.svg");
+        std::fs::write(&svg, "<svg/>").unwrap();
+        assert_eq!(code(&db, &["submit", s(&svg)]), Some(4));
+        assert_eq!(code(&db, &["submit", "--kind", "image", s(&svg)]), Some(4));
+        let dir = site(d.path());
+        std::fs::write(dir.join("x.exe"), "MZ").unwrap();
+        assert_eq!(code(&db, &["submit", s(&dir)]), Some(4));
+        std::fs::remove_file(dir.join("x.exe")).unwrap();
+        assert_eq!(code(&db, &["submit", s(&dir)]), Some(0));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn symlinks_are_rejected() {
+        let d = tempfile::tempdir().unwrap();
+        let db = d.path().join("c.db");
+        let dir = site(d.path());
+        std::os::unix::fs::symlink("/etc/hostname", dir.join("link.txt")).unwrap();
+        assert_eq!(code(&db, &["submit", s(&dir)]), Some(4));
+    }
+
+    #[test]
+    fn get_needs_out_and_writes_files() {
+        let d = tempfile::tempdir().unwrap();
+        let db = d.path().join("c.db");
+        let dir = site(d.path());
+        let r = ok(&db, &["submit", s(&dir)]);
+        let id = r["id"].as_str().unwrap();
+        assert_eq!(code(&db, &["get", id]), Some(2));
+        let out = d.path().join("out");
+        let l = ok(&db, &["get", id, "--out", s(&out)]);
+        let paths: Vec<&str> = l["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f["path"].as_str().unwrap())
+            .collect();
+        assert_eq!(paths, ["css/a.css", "index.html", "logo.png"]);
+        assert_eq!(l["files"][0]["media_type"], "text/css");
+        assert_eq!(
+            std::fs::read(out.join("logo.png")).unwrap(),
+            std::fs::read(dir.join("logo.png")).unwrap()
+        );
+        assert_eq!(
+            std::fs::read_to_string(out.join("css/a.css")).unwrap(),
+            "body{}"
+        );
+    }
+
+    #[test]
+    fn single_html_is_stored_as_index_and_image_roundtrips() {
+        let d = tempfile::tempdir().unwrap();
+        let db = d.path().join("c.db");
+        let h = d.path().join("page.html");
+        std::fs::write(&h, "<p>x").unwrap();
+        let id = ok(&db, &["submit", s(&h)])["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let out = d.path().join("o1");
+        let l = ok(&db, &["get", &id, "--out", s(&out)]);
+        assert_eq!(l["files"][0]["path"], "index.html");
+        assert!(out.join("index.html").exists());
+
+        let png = d.path().join("p.png");
+        std::fs::write(&png, [1u8, 2, 3]).unwrap();
+        let id = ok(&db, &["submit", s(&png)])["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(code(&db, &["get", &id]), Some(2));
+        let out = d.path().join("o2");
+        let l = ok(&db, &["get", &id, "--out", s(&out)]);
+        assert_eq!(l["files"][0]["media_type"], "image/png");
+        assert_eq!(std::fs::read(out.join("p.png")).unwrap(), [1, 2, 3]);
+        // --out is not for markdown
+        let md = d.path().join("a.md");
+        std::fs::write(&md, "# x\n").unwrap();
+        let mid = ok(&db, &["submit", s(&md)])["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(code(&db, &["get", &mid, "--out", s(&out)]), Some(2));
+    }
+
+    #[test]
+    fn editing_a_bundle_with_one_changed_file_stores_one_blob() {
+        let d = tempfile::tempdir().unwrap();
+        let db = d.path().join("c.db");
+        let dir = site(d.path());
+        let id = ok(&db, &["submit", s(&dir)])["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(blobs(&db), 3);
+        std::fs::write(dir.join("css/a.css"), "body{color:red}").unwrap();
+        let r = ok(&db, &["edit", &id, s(&dir)]);
+        assert_eq!(r["revision"], 2);
+        assert_eq!(blobs(&db), 4);
+        let n: i64 = rusqlite::Connection::open(&db)
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM revision_files WHERE revision = 2",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 3);
+        // a markdown Artifact cannot be edited with a directory
+        let md = d.path().join("a.md");
+        std::fs::write(&md, "# x\n").unwrap();
+        let mid = ok(&db, &["submit", s(&md)])["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(code(&db, &["edit", &mid, s(&dir)]), Some(4));
+    }
+}

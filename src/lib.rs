@@ -1,4 +1,5 @@
 pub mod artifact;
+pub mod bundle;
 pub mod cli;
 pub mod comments;
 pub mod config;
@@ -15,7 +16,9 @@ use std::io::{Read, Write};
 use cli::{Command, CommentAction, Context};
 use error::Error;
 
-fn read_input(path: &str) -> Result<Vec<u8>, Error> {
+/// Read a submitted path: a file, a directory (a Bundle) or `-` for stdin.
+/// A single file is returned under its own file name, or `-` for stdin.
+fn read_input(path: &str) -> Result<bundle::Input, Error> {
     let io = |e: std::io::Error| Error::Usage(format!("cannot read {path}: {e}"));
     if path == "-" {
         let mut buf = Vec::new();
@@ -23,11 +26,31 @@ fn read_input(path: &str) -> Result<Vec<u8>, Error> {
             .take(limits::MAX_FILE_BYTES + 1)
             .read_to_end(&mut buf)
             .map_err(io)?;
-        return Ok(buf);
+        limits::check_file(buf.len() as u64)?;
+        return Ok(bundle::Input {
+            files: vec![bundle::RawFile {
+                path: "-".into(),
+                bytes: buf,
+            }],
+            dir: false,
+        });
     }
     let meta = std::fs::metadata(path).map_err(io)?;
+    if meta.is_dir() {
+        return bundle::read_dir(std::path::Path::new(path));
+    }
     limits::check_file(meta.len())?;
-    std::fs::read(path).map_err(io)
+    let file_name = std::path::Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| Error::Usage(format!("no file name in {path:?}")))?;
+    Ok(bundle::Input {
+        files: vec![bundle::RawFile {
+            path: file_name.to_string(),
+            bytes: std::fs::read(path).map_err(io)?,
+        }],
+        dir: false,
+    })
 }
 
 fn read_body(body: &str) -> Result<String, Error> {
@@ -72,17 +95,26 @@ pub fn run(command: Command, ctx: &Context) -> Result<u8, Error> {
             if format.is_some() {
                 return Err(Error::Rejected("--format is not supported yet".into()));
             }
-            let kind = kind::infer(&path, kind)?;
+            let is_dir = !stdin && std::path::Path::new(&path).is_dir();
+            // A directory can only be an html Bundle.
+            let kind = match (kind, is_dir) {
+                (None, true) => kind::Kind::Html,
+                _ => kind::infer(&path, kind)?,
+            };
             let name = match name {
                 Some(n) => n,
-                None => std::path::Path::new(&path)
-                    .file_name()
+                None => std::fs::canonicalize(&path)
+                    .ok()
+                    .as_deref()
+                    .and_then(std::path::Path::file_name)
                     .and_then(|n| n.to_str())
                     .ok_or_else(|| Error::Usage(format!("no file name in {path:?}")))?
                     .to_string(),
             };
-            let bytes = read_input(&path)?;
-            limits::check_file(bytes.len() as u64)?;
+            let mut input = read_input(&path)?;
+            if !input.dir {
+                input.files[0].path = name.clone();
+            }
             let scope = scope::for_write(selection(ctx)).map_err(Error::Usage)?;
             let mut conn = db::open(&ctx.db_path)?;
             let r = artifact::submit(
@@ -91,7 +123,7 @@ pub fn run(command: Command, ctx: &Context) -> Result<u8, Error> {
                 artifact::SubmitInput {
                     name,
                     kind,
-                    bytes,
+                    input,
                     scope,
                 },
             )?;
@@ -110,13 +142,19 @@ pub fn run(command: Command, ctx: &Context) -> Result<u8, Error> {
                     "edit takes a bare artifact id, not id@revision".into(),
                 ));
             }
-            let bytes = read_input(&path)?;
+            let mut input = read_input(&path)?;
             let mut conn = db::open(&ctx.db_path)?;
             let r = match section {
                 Some(q) => {
+                    if input.dir {
+                        return Err(Error::Usage(
+                            "--section takes a file, not a directory".into(),
+                        ));
+                    }
+                    let bytes = input.files.remove(0).bytes;
                     artifact::section_edit(&mut conn, ctx, &id, &q, &bytes, base, &addresses)?
                 }
-                None => artifact::edit(&mut conn, ctx, &id, bytes, base, &addresses)?,
+                None => artifact::edit(&mut conn, ctx, &id, input, base, &addresses)?,
             };
             println!("{}", serde_json::to_string(&r).expect("ref serializes"));
             Ok(0)
@@ -195,9 +233,34 @@ pub fn run(command: Command, ctx: &Context) -> Result<u8, Error> {
             );
             Ok(0)
         }
-        Command::Get { target, section } => {
+        Command::Get {
+            target,
+            section,
+            out,
+        } => {
             let (id, rev) = artifact::parse_target(&target)?;
             let conn = db::open(&ctx.db_path)?;
+            let (kind, files) = artifact::get_files(&conn, &id, rev)?;
+            if matches!(kind, kind::Kind::Html | kind::Kind::Image) {
+                if section.is_some() {
+                    return Err(Error::Usage("--section is for markdown Artifacts".into()));
+                }
+                let out = out.ok_or_else(|| {
+                    Error::Usage(format!(
+                        "{} Artifacts are files: pass --out <dir>",
+                        kind.as_str()
+                    ))
+                })?;
+                let listing = write_out(std::path::Path::new(&out), &files)?;
+                println!("{}", serde_json::json!({ "files": listing }));
+                return Ok(0);
+            }
+            if out.is_some() {
+                return Err(Error::Usage(format!(
+                    "--out is for image and html Artifacts, not {}",
+                    kind.as_str()
+                )));
+            }
             let bytes = match section {
                 Some(q) => {
                     let text = artifact::markdown_text(&conn, &id, rev)?;
@@ -212,6 +275,34 @@ pub fn run(command: Command, ctx: &Context) -> Result<u8, Error> {
                 .map(|_| 0)
         }
     }
+}
+
+/// Write a Revision's files under `dir` and return the file list.
+fn write_out(
+    dir: &std::path::Path,
+    files: &[artifact::StoredFile],
+) -> Result<Vec<serde_json::Value>, Error> {
+    let io = |p: &std::path::Path, e: std::io::Error| {
+        Error::Unexpected(format!("cannot write {}: {e}", p.display()))
+    };
+    let mut listing = Vec::with_capacity(files.len());
+    for f in files {
+        if !bundle::safe_path(&f.path) {
+            return Err(Error::Unexpected(format!(
+                "stored path {:?} is unsafe",
+                f.path
+            )));
+        }
+        let dest = dir.join(&f.path);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| io(parent, e))?;
+        }
+        std::fs::write(&dest, &f.bytes).map_err(|e| io(&dest, e))?;
+        listing.push(serde_json::json!({
+            "path": f.path, "media_type": f.media_type, "size": f.size
+        }));
+    }
+    Ok(listing)
 }
 
 fn run_comment(action: CommentAction, ctx: &Context) -> Result<u8, Error> {

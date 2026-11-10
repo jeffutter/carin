@@ -6,20 +6,20 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
+use crate::bundle::{self, FileInput, Input, RawFile};
 use crate::cli::Context;
 use crate::comments;
 use crate::db::{db_err, write_tx};
 use crate::error::Error;
 use crate::ids::new_artifact_id;
 use crate::kind::Kind;
-use crate::limits;
 use crate::scope::{Scope, ScopeFilter};
 use crate::sections;
 
 pub struct SubmitInput {
     pub name: String,
     pub kind: Kind,
-    pub bytes: Vec<u8>,
+    pub input: Input,
     pub scope: Option<Scope>,
 }
 
@@ -66,9 +66,7 @@ pub fn parse_target(s: &str) -> Result<(String, Option<i64>), Error> {
 }
 
 pub fn submit(conn: &mut Connection, ctx: &Context, input: SubmitInput) -> Result<Ref, Error> {
-    limits::check_file(input.bytes.len() as u64)?;
-    let media_type = input.kind.media_type()?;
-    let sha = hex(&Sha256::digest(&input.bytes));
+    let files = bundle::prepare(input.kind, input.input, &input.name)?;
     write_tx(conn, |tx| {
         let mut id = None;
         for _ in 0..5 {
@@ -99,19 +97,41 @@ pub fn submit(conn: &mut Connection, ctx: &Context, input: SubmitInput) -> Resul
             params![id, ctx.author, ctx.role.as_str(), ctx.session],
         )
         .map_err(db_err)?;
+        insert_files(tx, &id, 1, &files)?;
+        Ok(Ref { id, revision: 1 })
+    })
+}
+
+/// Store a Revision's file set. Blobs are content-addressed, so a file that
+/// did not change shares its blob with earlier Revisions.
+fn insert_files(
+    tx: &rusqlite::Transaction,
+    id: &str,
+    revision: i64,
+    files: &[FileInput],
+) -> Result<(), Error> {
+    for f in files {
+        let sha = hex(&Sha256::digest(&f.bytes));
         tx.execute(
             "INSERT OR IGNORE INTO blobs (sha256, bytes) VALUES (?1, ?2)",
-            params![sha, input.bytes],
+            params![sha, f.bytes],
         )
         .map_err(db_err)?;
         tx.execute(
             "INSERT INTO revision_files (artifact_id, revision, path, media_type, size, sha256)
-             VALUES (?1, 1, ?2, ?3, ?4, ?5)",
-            params![id, input.name, media_type, input.bytes.len() as i64, sha],
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                id,
+                revision,
+                f.path,
+                f.media_type,
+                f.bytes.len() as i64,
+                sha
+            ],
         )
         .map_err(db_err)?;
-        Ok(Ref { id, revision: 1 })
-    })
+    }
+    Ok(())
 }
 
 /// Append a new full-snapshot Revision. The latest number and the existence
@@ -121,11 +141,22 @@ pub fn edit(
     conn: &mut Connection,
     ctx: &Context,
     id: &str,
-    bytes: Vec<u8>,
+    input: Input,
     base: Option<i64>,
     addresses: &[i64],
 ) -> Result<Ref, Error> {
-    append_revision(conn, ctx, id, base, addresses, |_, _| Ok(bytes))
+    append_revision(conn, ctx, id, base, addresses, |kind, latest| {
+        let kind = Kind::parse(kind)?;
+        let mut input = input;
+        let mut single_path = String::new();
+        if kind != Kind::Html {
+            single_path = latest.single_path()?;
+            if kind == Kind::Image && input.files.len() == 1 && input.files[0].path == "-" {
+                input.files[0].path = single_path.clone();
+            }
+        }
+        bundle::prepare(kind, input, &single_path)
+    })
 }
 
 /// Replace one Section of the latest markdown Revision. The splice runs
@@ -143,8 +174,26 @@ pub fn section_edit(
     let replacement = std::str::from_utf8(replacement)
         .map_err(|_| Error::Rejected("section replacement is not valid UTF-8".into()))?;
     append_revision(conn, ctx, id, base, addresses, |kind, latest| {
-        let text = utf8_markdown(kind, latest)?;
-        Ok(sections::splice(text, query, replacement)?.into_bytes())
+        if kind != Kind::Markdown.as_str() {
+            return Err(Error::Rejected(format!(
+                "sections are for markdown Artifacts, not {kind}"
+            )));
+        }
+        let path = latest.single_path()?;
+        let bytes = latest.single_bytes()?;
+        let text = utf8_markdown(kind, &bytes)?;
+        let spliced = sections::splice(text, query, replacement)?.into_bytes();
+        bundle::prepare(
+            Kind::Markdown,
+            Input {
+                files: vec![RawFile {
+                    path: path.clone(),
+                    bytes: spliced,
+                }],
+                dir: false,
+            },
+            &path,
+        )
     })
 }
 
@@ -172,15 +221,58 @@ pub fn markdown_text(conn: &Connection, id: &str, revision: Option<i64>) -> Resu
     Ok(utf8_markdown(&kind, &bytes)?.to_string())
 }
 
-/// Shared insert path. `produce` gets the Artifact's Kind and the latest
-/// Revision's bytes and returns the new bytes.
+/// The latest Revision's files, read lazily so a Bundle edit that does not
+/// need them never loads their bytes.
+struct Latest<'a> {
+    tx: &'a rusqlite::Transaction<'a>,
+    id: &'a str,
+    revision: i64,
+}
+
+impl Latest<'_> {
+    fn single_path(&self) -> Result<String, Error> {
+        Ok(self.single()?.0)
+    }
+
+    fn single_bytes(&self) -> Result<Vec<u8>, Error> {
+        Ok(self.single()?.1)
+    }
+
+    fn single(&self) -> Result<(String, Vec<u8>), Error> {
+        let mut stmt = self
+            .tx
+            .prepare(
+                "SELECT f.path, b.bytes FROM revision_files f
+                 JOIN blobs b ON b.sha256 = f.sha256
+                 WHERE f.artifact_id = ?1 AND f.revision = ?2",
+            )
+            .map_err(db_err)?;
+        let rows = stmt
+            .query_map(params![self.id, self.revision], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))
+            })
+            .map_err(db_err)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(db_err)?;
+        let mut it = rows.into_iter();
+        match (it.next(), it.next()) {
+            (Some(row), None) => Ok(row),
+            _ => Err(Error::Rejected(
+                "the latest Revision is not a single file".into(),
+            )),
+        }
+    }
+}
+
+/// Shared insert path. `produce` gets the Artifact's Kind and its latest
+/// Revision and returns the checked files of the new one.
 fn append_revision(
     conn: &mut Connection,
     ctx: &Context,
     id: &str,
     base: Option<i64>,
     addresses: &[i64],
-    produce: impl FnOnce(&str, &[u8]) -> Result<Vec<u8>, Error>,
+    produce: impl FnOnce(&str, &Latest) -> Result<Vec<FileInput>, Error>,
 ) -> Result<Ref, Error> {
     write_tx(conn, |tx| {
         let kind: String = tx
@@ -205,21 +297,16 @@ fn append_revision(
                 "stale base: you edited from @{b} but latest_revision is {latest}, written by {author}"
             )));
         }
-        let (path, media_type, latest_bytes): (String, String, Vec<u8>) = tx
-            .query_row(
-                "SELECT f.path, f.media_type, b.bytes FROM revision_files f
-                 JOIN blobs b ON b.sha256 = f.sha256
-                 WHERE f.artifact_id = ?1 AND f.revision = ?2",
-                params![id, latest],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .map_err(db_err)?;
         // Validate before any insert so a bad id leaves no Revision.
         let threads = comments::check_addressable(tx, id, addresses)?;
-        let bytes = produce(&kind, &latest_bytes)?;
-        limits::check_file(bytes.len() as u64)?;
-        limits::check_revision(bytes.len() as u64)?;
-        let sha = hex(&Sha256::digest(&bytes));
+        let files = produce(
+            &kind,
+            &Latest {
+                tx,
+                id,
+                revision: latest,
+            },
+        )?;
         let n = latest + 1;
         tx.execute(
             "INSERT INTO revisions (artifact_id, number, author, role, session, created_at)
@@ -227,17 +314,7 @@ fn append_revision(
             params![id, n, ctx.author, ctx.role.as_str(), ctx.session],
         )
         .map_err(db_err)?;
-        tx.execute(
-            "INSERT OR IGNORE INTO blobs (sha256, bytes) VALUES (?1, ?2)",
-            params![sha, bytes],
-        )
-        .map_err(db_err)?;
-        tx.execute(
-            "INSERT INTO revision_files (artifact_id, revision, path, media_type, size, sha256)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![id, n, path, media_type, bytes.len() as i64, sha],
-        )
-        .map_err(db_err)?;
+        insert_files(tx, id, n, &files)?;
         tx.execute(
             "UPDATE artifacts SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?1",
             [id],
@@ -250,6 +327,63 @@ fn append_revision(
         comments::post_addressed(tx, ctx, id, &threads, &new_ref.to_string())?;
         Ok(new_ref)
     })
+}
+
+/// One stored file of a Revision, with its bytes.
+pub struct StoredFile {
+    pub path: String,
+    pub media_type: String,
+    pub size: i64,
+    pub bytes: Vec<u8>,
+}
+
+/// An Artifact's Kind and every file of a Revision (latest by default).
+pub fn get_files(
+    conn: &Connection,
+    id: &str,
+    revision: Option<i64>,
+) -> Result<(Kind, Vec<StoredFile>), Error> {
+    let kind: String = conn
+        .query_row("SELECT kind FROM artifacts WHERE id = ?1", [id], |r| {
+            r.get(0)
+        })
+        .optional()
+        .map_err(db_err)?
+        .ok_or_else(|| Error::NotFound(format!("no artifact {id}")))?;
+    let rev = match revision {
+        Some(r) => r,
+        None => conn
+            .query_row(
+                "SELECT MAX(number) FROM revisions WHERE artifact_id = ?1",
+                [id],
+                |r| r.get::<_, Option<i64>>(0),
+            )
+            .map_err(db_err)?
+            .ok_or_else(|| Error::NotFound(format!("artifact {id} has no revisions")))?,
+    };
+    let mut stmt = conn
+        .prepare(
+            "SELECT f.path, f.media_type, f.size, b.bytes FROM revision_files f
+             JOIN blobs b ON b.sha256 = f.sha256
+             WHERE f.artifact_id = ?1 AND f.revision = ?2 ORDER BY f.path",
+        )
+        .map_err(db_err)?;
+    let files = stmt
+        .query_map(params![id, rev], |r| {
+            Ok(StoredFile {
+                path: r.get(0)?,
+                media_type: r.get(1)?,
+                size: r.get(2)?,
+                bytes: r.get(3)?,
+            })
+        })
+        .map_err(db_err)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(db_err)?;
+    if files.is_empty() {
+        return Err(Error::NotFound(format!("no revision {id}@{rev}")));
+    }
+    Ok((Kind::parse(&kind)?, files))
 }
 
 /// Content of the single file of an Artifact's Revision (latest by default).
@@ -273,15 +407,14 @@ pub fn get(conn: &Connection, id: &str, revision: Option<i64>) -> Result<Vec<u8>
             .map_err(db_err)?
             .ok_or_else(|| Error::NotFound(format!("artifact {id} has no revisions")))?,
     };
-    conn.query_row(
-        "SELECT b.bytes FROM revision_files f JOIN blobs b ON b.sha256 = f.sha256
-         WHERE f.artifact_id = ?1 AND f.revision = ?2",
-        params![id, rev],
-        |r| r.get::<_, Vec<u8>>(0),
-    )
-    .optional()
-    .map_err(db_err)?
-    .ok_or_else(|| Error::NotFound(format!("no revision {id}@{rev}")))
+    let (_, mut files) = get_files(conn, id, Some(rev))?;
+    if files.len() != 1 {
+        return Err(Error::Usage(format!(
+            "{id}@{rev} has {} files: pass --out <dir>",
+            files.len()
+        )));
+    }
+    Ok(files.remove(0).bytes)
 }
 
 /// Filters for [`list`]. `session` and `mine` look at the latest Revision,

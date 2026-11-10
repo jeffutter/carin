@@ -60,7 +60,7 @@ pub struct Cli {
 pub enum Command {
     /// Store a new Artifact and print its ref
     Submit {
-        /// File to submit, or `-` for stdin
+        /// File, directory (an html Bundle) or `-` for stdin
         path: String,
         /// Artifact Kind (inferred from the extension; required for stdin)
         #[arg(long, value_enum)]
@@ -76,7 +76,7 @@ pub enum Command {
     Edit {
         /// Artifact id (no `@revision`)
         id: String,
-        /// File with the new content, or `-` for stdin
+        /// File, directory (html Bundle) or `-` for stdin
         path: String,
         /// Refuse unless this is still the latest Revision (exit 6)
         #[arg(long)]
@@ -94,6 +94,9 @@ pub enum Command {
         /// Print only this markdown Section ("A > B", children included)
         #[arg(long)]
         section: Option<String>,
+        /// Directory to write an image or html Artifact's files into
+        #[arg(long)]
+        out: Option<String>,
     },
     /// List a markdown Artifact's headings with their paths and sizes
     Outline { target: String },

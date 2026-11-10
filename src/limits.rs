@@ -25,6 +25,15 @@ pub fn check_revision(total: u64) -> Result<(), Error> {
     Ok(())
 }
 
+pub fn check_bundle_files(n: usize) -> Result<(), Error> {
+    if n > MAX_BUNDLE_FILES {
+        return Err(Error::Rejected(format!(
+            "{n} files, over the limit of {MAX_BUNDLE_FILES} files per Bundle"
+        )));
+    }
+    Ok(())
+}
+
 pub fn check_comment(size: u64) -> Result<(), Error> {
     if size > MAX_COMMENT_BYTES {
         return Err(Error::Rejected(format!(

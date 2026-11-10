@@ -36,7 +36,7 @@ Optionally a per-Artifact "last seen" marker for the web UI ([web-ui.md](web-ui.
 
 - The Kind is given with `--kind` or inferred from the extension. It is never sniffed from content. Ambiguous input is an error, and `.svg` always needs `--kind diagram --format svg`.
 - A single-page html Artifact is a Bundle of one file. Revisions are full snapshots, so editing a Bundle resubmits the whole Bundle.
-- Media types are checked against an allowlist at submit and stored with each file.
+- Media types are checked against an allowlist at submit, by extension and never by content, and stored with each file. `image`: png, jpg/jpeg, gif, webp. `html` Bundle files: html, css, js, json, txt, svg, ico, woff, woff2, png, jpg/jpeg, gif, webp. Anything else is rejected (exit 4).
 - Mermaid: the source is validated by rendering it with Pele at submit; invalid source is rejected with Pele's error code and message. Only the source is stored; SVG is derived on demand and not cached ([ADR 0002](adr/0002-render-mermaid-server-side-with-pele.md)). Raw SVG gets at most a well-formedness check, and neither format is sanitised on the server, because containment is the untrusted origin ([web-ui.md](web-ui.md#untrusted-content)).
 - Diagrams render with fixed light-neutral Pele variables (links and images off, options never author-supplied) on a light background. Dark-mode diagrams are deferred; D2 and Excalidraw are wanted later and need only a new renderer, since `format` is an open attribute.
 
