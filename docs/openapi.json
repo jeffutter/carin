@@ -88,7 +88,7 @@
           {
             "name": "worktree",
             "in": "query",
-            "description": "Absolute path of a linked Worktree: shows the Project root's Artifacts\nplus that Worktree's, as the CLI does from inside one.",
+            "description": "Absolute path of a linked Worktree: shows the Project root's Artifacts\nplus that Worktree's, as the CLI does from inside one. Needs `project`\nor `project_root` to say which Project it belongs to, else 400.",
             "required": false,
             "schema": {
               "type": "string"

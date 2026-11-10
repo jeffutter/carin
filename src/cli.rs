@@ -53,6 +53,14 @@ pub struct Cli {
     #[arg(long, global = true, env = "CAIRN_PROJECT")]
     pub project: Option<String>,
 
+    /// Print JSON (the default in agent sessions and when output is not a terminal; env CAIRN_FORMAT=json|text)
+    #[arg(long, global = true)]
+    pub json: bool,
+
+    /// Print human-readable text (the default on a terminal outside agent sessions)
+    #[arg(long, global = true)]
+    pub text: bool,
+
     #[command(subcommand)]
     pub command: Command,
 }
@@ -144,9 +152,6 @@ pub enum Command {
         /// Maximum rows
         #[arg(long, default_value_t = 50, value_parser = clap::value_parser!(i64).range(1..))]
         limit: i64,
-        /// Print a table instead of JSON
-        #[arg(long)]
-        text: bool,
         /// Show Artifacts of every Project
         #[arg(long, conflicts_with = "project_root")]
         all_projects: bool,
@@ -241,9 +246,6 @@ pub enum CommentAction {
         /// Seconds to wait before giving up
         #[arg(long, default_value_t = 60, requires = "wait", value_name = "SECS")]
         timeout: u64,
-        /// Print a table instead of JSON
-        #[arg(long)]
-        text: bool,
         /// Show Artifacts of every Project
         #[arg(long, conflicts_with = "project_root")]
         all_projects: bool,

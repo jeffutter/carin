@@ -41,8 +41,7 @@ use crate::sections::{self, Outline};
 const NOSNIFF: HeaderName = HeaderName::from_static("x-content-type-options");
 const DEFAULT_LIMIT: i64 = 50;
 const MAX_LIMIT: i64 = 200;
-/// Default and ceiling, in seconds, of `GET .../comments?wait=`. Each waiter
-/// holds a blocking thread, so the ceiling is a resource bound.
+/// Default and ceiling, in seconds, of `GET .../comments?wait=`.
 const DEFAULT_WAIT_SECS: u64 = 60;
 const MAX_WAIT_SECS: u64 = 300;
 /// Body limit of the multipart routes: the per-Revision limit plus room for
@@ -170,12 +169,23 @@ async fn unknown_route() -> ApiError {
     Error::NotFound("no such API route".into()).into()
 }
 
-async fn wrong_method() -> Response {
-    problem(
+/// Turn axum's bodyless 405 into a problem+json one, keeping the `Allow`
+/// header axum computed from the route's methods (RFC 9110 requires it). Not a
+/// per-route fallback, which would also bypass axum's HEAD-from-GET routing.
+async fn problem_405(req: Request, next: Next) -> Response {
+    let res = next.run(req).await;
+    if res.status() != StatusCode::METHOD_NOT_ALLOWED {
+        return res;
+    }
+    let mut out = problem(
         StatusCode::METHOD_NOT_ALLOWED,
         Error::Usage(String::new()).code(),
         "this route does not accept that method; see /api/v1/openapi.json".into(),
-    )
+    );
+    if let Some(allow) = res.headers().get(header::ALLOW) {
+        out.headers_mut().insert(header::ALLOW, allow.clone());
+    }
+    out
 }
 
 // --- plumbing -----------------------------------------------------------------
@@ -260,7 +270,8 @@ struct ListParams {
     /// Absolute path of the Project's main checkout.
     project_root: Option<String>,
     /// Absolute path of a linked Worktree: shows the Project root's Artifacts
-    /// plus that Worktree's, as the CLI does from inside one.
+    /// plus that Worktree's, as the CLI does from inside one. Needs `project`
+    /// or `project_root` to say which Project it belongs to, else 400.
     worktree: Option<String>,
 }
 
@@ -295,6 +306,16 @@ impl ListParams {
         };
         if let Some(r) = &self.project_root {
             absolute("project_root", r)?;
+        }
+        // A Worktree belongs to a Project: without a name or root to say which,
+        // `worktree` alone would match every Project's Artifacts.
+        if self.worktree.is_some()
+            && self.project_root.is_none()
+            && !matches!(sel, Selection::Name(_))
+        {
+            return Err(Error::Usage(
+                "worktree needs project or project_root".into(),
+            ));
         }
         let mut scope = ScopeFilter::build(
             &sel,
@@ -535,31 +556,48 @@ async fn list_comments(
 ) -> Result<Response, ApiError> {
     let id = bare_id(&id)?.to_string();
     let wait = q.wait_secs()?;
-    let db_path = s.db_path.clone();
-    let list = run(&s, move |c| {
-        let ctx = Context {
-            role: Role::Reviewer,
-            author: "api".into(),
-            session: None,
-            session_explicit: None,
-            db_path,
-            project: None,
-        };
-        let query = comments::ListQuery {
-            artifact: Some(id),
-            all: q.all.unwrap_or(false),
-            since: q.since,
-            scope: ScopeFilter::unscoped(),
-        };
-        match wait {
-            None => comments::list(c, &ctx, &query),
-            Some(secs) => match comments::wait(c, &ctx, &query, Duration::from_secs(secs))? {
-                comments::WaitOutcome::Ready(l) | comments::WaitOutcome::TimedOut(l) => Ok(l),
-            },
+    let (all, since) = (q.all.unwrap_or(false), q.since);
+    // The API has no caller identity, so no Comment is "its own": a Comment by
+    // any author, including one named `api`, ends a wait.
+    let ctx = Context {
+        role: Role::Reviewer,
+        author: "api".into(),
+        session: None,
+        session_explicit: None,
+        db_path: s.db_path.clone(),
+        project: None,
+    };
+    let query = move || comments::ListQuery {
+        artifact: Some(id.clone()),
+        all,
+        since,
+        scope: ScopeFilter::unscoped(),
+    };
+    let Some(secs) = wait else {
+        let list = run(&s, move |c| comments::list(c, &ctx, &query())).await?;
+        return Ok(json(&list));
+    };
+    // The wait is an async loop of short blocking checks rather than one
+    // blocking sleep loop: dropping this future (the client disconnected)
+    // stops it at the next await, and no blocking thread or connection is
+    // held between polls.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(secs);
+    let ctx = std::sync::Arc::new(ctx);
+    let (c1, q1) = (ctx.clone(), query.clone());
+    let baseline = run(&s, move |c| comments::wait_baseline(c, &q1())).await?;
+    loop {
+        let (c2, q2) = (c1.clone(), query.clone());
+        let list = run(&s, move |c| {
+            comments::poll_newer(c, &c2, &q2(), baseline, false)
+        })
+        .await?;
+        let now = tokio::time::Instant::now();
+        if !list.threads.is_empty() || now >= deadline {
+            return Ok(json(&list));
         }
-    })
-    .await?;
-    Ok(json(&list))
+        let poll = Duration::from_millis(comments::WAIT_POLL_MS);
+        tokio::time::sleep((deadline - now).min(poll)).await;
+    }
 }
 
 // --- writes -------------------------------------------------------------------
@@ -740,7 +778,7 @@ struct Deleted {
 
 fn kind_from_meta(k: &str) -> Result<Kind, Error> {
     Kind::parse(k).map_err(|_| {
-        Error::Rejected(format!(
+        Error::Usage(format!(
             "unknown kind {k:?}: use markdown, html, image or diagram"
         ))
     })
@@ -800,7 +838,7 @@ async fn create_artifact(State(s): State<ApiState>, up: Upload) -> Result<Respon
     let format = non_empty(&meta.format)
         .map(|f| {
             Format::parse(&f)
-                .map_err(|_| Error::Rejected(format!("unknown format {f:?}: use mermaid or svg")))
+                .map_err(|_| Error::Usage(format!("unknown format {f:?}: use mermaid or svg")))
         })
         .transpose()?;
     let mut files = up.files;
@@ -1067,13 +1105,13 @@ async fn openapi() -> Response {
     ([(header::CONTENT_TYPE, "application/json")], openapi_json()).into_response()
 }
 
-/// A route answering only GET; any other method is a problem+json 405.
+/// A route answering only GET (and HEAD); any other method is a 405.
 fn read_only<H, T>(h: H) -> MethodRouter<ApiState>
 where
     H: axum::handler::Handler<T, ApiState>,
     T: 'static,
 {
-    get(h).fallback(wrong_method)
+    get(h)
 }
 
 fn upload_limit() -> DefaultBodyLimit {
@@ -1087,7 +1125,6 @@ pub(crate) fn router(db_path: PathBuf) -> Router {
             "/api/v1/artifacts",
             get(list_artifacts)
                 .post(create_artifact)
-                .fallback(wrong_method)
                 .layer(upload_limit()),
         )
         .route(
@@ -1095,7 +1132,6 @@ pub(crate) fn router(db_path: PathBuf) -> Router {
             get(get_artifact)
                 .put(edit_artifact)
                 .delete(delete_artifact)
-                .fallback(wrong_method)
                 .layer(upload_limit()),
         )
         .route(
@@ -1113,17 +1149,12 @@ pub(crate) fn router(db_path: PathBuf) -> Router {
         .route("/api/v1/artifacts/{id}/outline", read_only(get_outline))
         .route(
             "/api/v1/artifacts/{id}/comments",
-            get(list_comments).post(add_comment).fallback(wrong_method),
+            get(list_comments).post(add_comment),
         )
-        .route(
-            "/api/v1/threads/{id}/resolve",
-            post(resolve_thread).fallback(wrong_method),
-        )
-        .route(
-            "/api/v1/threads/{id}/reopen",
-            post(reopen_thread).fallback(wrong_method),
-        )
+        .route("/api/v1/threads/{id}/resolve", post(resolve_thread))
+        .route("/api/v1/threads/{id}/reopen", post(reopen_thread))
         .route("/api/v1/{*rest}", axum::routing::any(unknown_route))
+        .layer(from_fn(problem_405))
         .layer(from_fn(same_origin_writes))
         .with_state(ApiState { db_path })
 }
@@ -1402,6 +1433,16 @@ mod tests {
             .await;
         f.problem("/api/v1/artifacts?worktree=rel", 400, "usage")
             .await;
+        // A Worktree without a Project would match every Project's root
+        // Artifacts, so it is refused; with a name it narrows that Project.
+        let d = f
+            .problem("/api/v1/artifacts?worktree=/wt/x", 400, "usage")
+            .await;
+        assert!(d["detail"].as_str().unwrap().contains("project"));
+        assert_eq!(
+            names(f.json("/api/v1/artifacts?project=p&worktree=/wt/x").await),
+            ["p-root", "p-wt"]
+        );
     }
 
     #[tokio::test]
@@ -1631,6 +1672,19 @@ mod tests {
                 405
             );
         }
+        // The 405 names the allowed methods; HEAD works on GET routes.
+        let (_, hd, _) = f.request("DELETE", HOST, "/api/v1/artifacts").await;
+        let allow = hd["allow"].to_str().unwrap().to_string();
+        for m in ["GET", "HEAD", "POST"] {
+            assert!(allow.contains(m), "{allow}");
+        }
+        assert!(!allow.contains("DELETE"), "{allow}");
+        let (_, hd, _) = f.request("POST", HOST, "/api/v1/openapi.json").await;
+        assert!(hd["allow"].to_str().unwrap().contains("GET"));
+        let (st, hd, body) = f.request("HEAD", HOST, "/api/v1/artifacts").await;
+        assert_eq!(st, StatusCode::OK);
+        assert_eq!(hd["content-type"], "application/json");
+        assert!(body.is_empty());
         // No CORS, and the hardening layer applies.
         let (_, hd, _) = f.get("/api/v1/artifacts").await;
         assert!(hd.get("access-control-allow-origin").is_none());
@@ -2103,10 +2157,9 @@ mod tests {
     async fn rejected_input_is_422() {
         let f = Fixture::new();
         let md = r#"{"name":"a.md","kind":"markdown"}"#;
-        // Bad kind and format.
+        // A diagram without a format, or a format on another Kind. (An unknown
+        // kind or format value is malformed: see malformed_writes_are_400.)
         for meta in [
-            r#"{"name":"a","kind":"video"}"#,
-            r#"{"name":"a","kind":"diagram","format":"dot"}"#,
             r#"{"name":"a","kind":"diagram"}"#,
             r#"{"name":"a","kind":"markdown","format":"svg"}"#,
         ] {
@@ -2190,6 +2243,17 @@ mod tests {
             400,
             "usage",
         );
+        // An unknown kind or format value is malformed, as on the list filter.
+        for meta in [
+            r#"{"name":"a","kind":"video"}"#,
+            r#"{"name":"a","kind":"diagram","format":"dot"}"#,
+        ] {
+            is_problem(
+                &f.upload("POST", uri, Some(meta), &[("a", b"# A\n")]).await,
+                400,
+                "usage",
+            );
+        }
         let bad = f
             .send(
                 "POST",
@@ -2420,6 +2484,60 @@ mod tests {
         f.problem(&format!("{uri}?wait=soon"), 400, "usage").await;
         f.problem("/api/v1/artifacts/nope/comments?wait=1", 404, "not_found")
             .await;
+    }
+
+    #[tokio::test]
+    async fn long_poll_is_woken_by_a_comment_from_author_api() {
+        let f = Fixture::new();
+        let id = f.submit("plan", Kind::Markdown, &[("a.md", MD.as_bytes())], None);
+        let uri = format!("/api/v1/artifacts/{id}/comments");
+        let high = f.json(&uri).await["highest_comment_id"].as_i64().unwrap();
+        let db = f.db.clone();
+        let id2 = id.clone();
+        let adder = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            let mut conn = db::open(&db).unwrap();
+            let mut c = ctx(&db);
+            c.author = "api".into();
+            c.session = None;
+            comments::add(
+                &mut conn,
+                &c,
+                &id2,
+                "from api",
+                &comments::Locator::default(),
+                None,
+            )
+            .unwrap();
+        });
+        let t = std::time::Instant::now();
+        let v = f.json(&format!("{uri}?since={high}&wait=20")).await;
+        adder.join().unwrap();
+        assert!(t.elapsed() < Duration::from_secs(10), "{:?}", t.elapsed());
+        assert_eq!(v["threads"][0]["body"], "from api");
+    }
+
+    /// An abandoned long poll must release its resources: with a single
+    /// blocking thread, a request made after the dropped wait still completes.
+    #[test]
+    fn dropped_long_poll_frees_the_blocking_pool() {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .max_blocking_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let f = Fixture::new();
+        let id = f.submit("plan", Kind::Markdown, &[("a.md", MD.as_bytes())], None);
+        rt.block_on(async {
+            let uri = format!("/api/v1/artifacts/{id}/comments?wait=300");
+            let dropped = tokio::time::timeout(Duration::from_millis(700), f.get(&uri)).await;
+            assert!(dropped.is_err(), "the wait should still be running");
+            let ok = tokio::time::timeout(Duration::from_secs(5), f.get("/api/v1/artifacts"))
+                .await
+                .expect("blocking pool is free");
+            assert_eq!(ok.0, StatusCode::OK);
+        });
     }
 
     #[test]

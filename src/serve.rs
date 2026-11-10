@@ -131,7 +131,13 @@ struct ContentState {
 
 /// Run both listeners until ctrl-c. Both ports are bound before anything
 /// runs, so a taken port fails fast with a non-zero exit.
-pub fn serve(db_path: &Path, ui_port: u16, content_port: u16, reviewer: &str) -> Result<u8, Error> {
+pub fn serve(
+    db_path: &Path,
+    ui_port: u16,
+    content_port: u16,
+    reviewer: &str,
+    fmt: crate::output::Format,
+) -> Result<u8, Error> {
     // Create and migrate the database up front so a bad path fails here.
     db::open(db_path)?;
     let ui_listener = bind_loopback(ui_port)?;
@@ -143,13 +149,13 @@ pub fn serve(db_path: &Path, ui_port: u16, content_port: u16, reviewer: &str) ->
         content_port,
         Renderer::start(),
     );
-    println!(
-        "{}",
-        serde_json::json!({
-            "ui": format!("http://127.0.0.1:{ui_port}"),
-            "content": format!("http://127.0.0.1:{content_port}"),
-            "reviewer": reviewer,
-        })
+    crate::output::emit(
+        fmt,
+        &crate::output::ServeStarted {
+            ui: format!("http://127.0.0.1:{ui_port}"),
+            content: format!("http://127.0.0.1:{content_port}"),
+            reviewer: reviewer.to_string(),
+        },
     );
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

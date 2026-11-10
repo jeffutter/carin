@@ -1,7 +1,19 @@
 use std::process::Command;
 
+/// The binary with the output-format environment cleared, so results do not
+/// depend on where `cargo test` runs (a Claude Code session sets all of these).
 fn cairn() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_cairn"))
+    let mut c = Command::new(env!("CARGO_BIN_EXE_cairn"));
+    for v in [
+        "CAIRN_FORMAT",
+        "AI_AGENT",
+        "CLAUDECODE",
+        "CLAUDE_CODE_ENTRYPOINT",
+        "PI_CODING_AGENT",
+    ] {
+        c.env_remove(v);
+    }
+    c
 }
 
 #[test]
@@ -467,7 +479,7 @@ mod roundtrip {
             .output()
             .unwrap();
         assert_eq!(
-            json(&o.stdout)["items"].as_array().map(|a| a.len()),
+            json(&o.stdout)["artifacts"].as_array().map(|a| a.len()),
             Some(0)
         );
     }
@@ -590,7 +602,7 @@ mod list_delete {
             "{}",
             String::from_utf8_lossy(&o.stderr)
         );
-        json(&o.stdout)["items"].as_array().unwrap().clone()
+        json(&o.stdout)["artifacts"].as_array().unwrap().clone()
     }
 
     fn ids(rows: &[serde_json::Value]) -> Vec<String> {
@@ -658,7 +670,7 @@ mod list_delete {
             .output()
             .unwrap();
         assert_eq!(
-            ids(json(&o.stdout)["items"].as_array().unwrap()),
+            ids(json(&o.stdout)["artifacts"].as_array().unwrap()),
             vec![a.clone()]
         );
         // --mine with a session
@@ -666,20 +678,26 @@ mod list_delete {
             .args(["--session", "s2", "list", "--mine"])
             .output()
             .unwrap();
-        assert_eq!(ids(json(&o.stdout)["items"].as_array().unwrap()), vec![b]);
+        assert_eq!(
+            ids(json(&o.stdout)["artifacts"].as_array().unwrap()),
+            vec![b]
+        );
         // --mine without a session falls back to the author
         let o = base(&db)
             .args(["--author", "bot", "list", "--mine"])
             .output()
             .unwrap();
-        assert_eq!(ids(json(&o.stdout)["items"].as_array().unwrap()), vec![a]);
+        assert_eq!(
+            ids(json(&o.stdout)["artifacts"].as_array().unwrap()),
+            vec![a]
+        );
         // the fallback env session does not filter by itself
         let o = base(&db)
             .env("CLAUDE_CODE_SESSION_ID", "zzz")
             .arg("list")
             .output()
             .unwrap();
-        assert_eq!(json(&o.stdout)["items"].as_array().unwrap().len(), 2);
+        assert_eq!(json(&o.stdout)["artifacts"].as_array().unwrap().len(), 2);
         // --open needs a Thread; none exist here
         assert_eq!(list(&db, &["--open"]).len(), 0);
     }
@@ -705,7 +723,7 @@ mod list_delete {
         assert_eq!(o.status.code(), Some(0));
         let ids_for = |args: &[&str]| {
             let o = base(&db).args(args).output().unwrap();
-            ids(json(&o.stdout)["items"].as_array().unwrap())
+            ids(json(&o.stdout)["artifacts"].as_array().unwrap())
         };
         assert_eq!(
             ids_for(&["--session", "s2", "list", "--mine"]),
@@ -1292,6 +1310,17 @@ mod comments {
     }
 
     #[test]
+    fn list_json_envelope_key_is_artifacts_not_items() {
+        let (_d, db, id) = setup();
+        let v = ok(&db, &["list"]);
+        assert!(
+            v.get("items").is_none(),
+            "CLI list must not use the API key"
+        );
+        assert_eq!(v["artifacts"][0]["id"], id);
+    }
+
+    #[test]
     fn list_defaults_all_since_and_scoping() {
         let (d, db, id) = setup();
         let c1 = ok(&db, &["comment", "add", &id, "one"]);
@@ -1446,11 +1475,11 @@ mod comments {
             ],
         );
         let rows = ok(&db, &["list"]);
-        assert_eq!(rows["items"][0]["open_threads"], 2);
+        assert_eq!(rows["artifacts"][0]["open_threads"], 2);
         ok(&db, &["comment", "resolve", &t1["id"].to_string()]);
-        assert_eq!(ok(&db, &["list"])["items"][0]["open_threads"], 1);
+        assert_eq!(ok(&db, &["list"])["artifacts"][0]["open_threads"], 1);
         assert_eq!(
-            ok(&db, &["list", "--open"])["items"]
+            ok(&db, &["list", "--open"])["artifacts"]
                 .as_array()
                 .unwrap()
                 .len(),
@@ -1458,7 +1487,7 @@ mod comments {
         );
         ok(&db, &["comment", "resolve", "2"]);
         assert_eq!(
-            ok(&db, &["list", "--open"])["items"]
+            ok(&db, &["list", "--open"])["artifacts"]
                 .as_array()
                 .unwrap()
                 .len(),
@@ -1839,7 +1868,7 @@ mod scoping {
     }
 
     fn names(v: &serde_json::Value) -> Vec<String> {
-        let mut n: Vec<String> = v["items"]
+        let mut n: Vec<String> = v["artifacts"]
             .as_array()
             .unwrap()
             .iter()
@@ -1867,7 +1896,7 @@ mod scoping {
         submit(&db, &wt, "in-wt", &[]);
 
         let v = ok(&db, &root, &["list", "--all-worktrees"]);
-        let rows = v["items"].as_array().unwrap();
+        let rows = v["artifacts"].as_array().unwrap();
         let find = |n: &str| {
             rows.iter()
                 .find(|r| r["name"] == format!("{n}.md"))
@@ -2004,7 +2033,7 @@ mod scoping {
         );
         assert_eq!(o.status.code(), Some(0));
         let v = ok(&db, &t, &["list", "--project", "none", "--all-worktrees"]);
-        let row = &v["items"][0];
+        let row = &v["artifacts"][0];
         assert_eq!(row["project"], "elsewhere");
         assert_eq!(row["project_root"], target.to_str().unwrap());
         // Reading that root back finds it, from anywhere.
@@ -2022,7 +2051,7 @@ mod scoping {
             assert_eq!(o.status.code(), Some(0));
         }
         let v = ok(&db, &t, &["list", "--all-worktrees"]);
-        let nulls = v["items"]
+        let nulls = v["artifacts"]
             .as_array()
             .unwrap()
             .iter()
@@ -2041,7 +2070,7 @@ mod scoping {
         // No repo: succeeds, no scope.
         submit(&db, &plain, "plain", &[]);
         let v = ok(&db, &plain, &["list"]);
-        assert!(v["items"][0]["project"].is_null());
+        assert!(v["artifacts"][0]["project"].is_null());
 
         // git missing from PATH.
         let empty = t.join("emptybin");
@@ -2074,7 +2103,7 @@ mod scoping {
         let id = submit(&db, &bare, "inbare", &[]);
         let v = ok(&db, &bare, &["list"]);
         assert!(
-            v["items"]
+            v["artifacts"]
                 .as_array()
                 .unwrap()
                 .iter()
@@ -2091,7 +2120,7 @@ mod scoping {
         let sub = sup.join("lib");
         submit(&db, &sub, "insub", &[]);
         let v = ok(&db, &sub, &["list"]);
-        let row = &v["items"][0];
+        let row = &v["artifacts"][0];
         assert_eq!(row["name"], "insub.md");
         assert_eq!(row["project"], "lib");
         assert_eq!(row["project_root"], sub.to_str().unwrap());
@@ -2613,7 +2642,7 @@ mod diagrams {
         assert_eq!(g.stdout, FLOW.as_bytes());
         let l = run(&db, &["list"]);
         let v: serde_json::Value = serde_json::from_slice(&l.stdout).unwrap();
-        assert_eq!(v["items"][0]["kind"], "diagram");
+        assert_eq!(v["artifacts"][0]["kind"], "diagram");
     }
 
     #[test]
@@ -2629,7 +2658,7 @@ mod diagrams {
         assert!(v["message"].as_str().unwrap().starts_with("mermaid: "));
         let l = run(&db, &["list"]);
         let v: serde_json::Value = serde_json::from_slice(&l.stdout).unwrap();
-        assert!(v["items"].as_array().unwrap().is_empty());
+        assert!(v["artifacts"].as_array().unwrap().is_empty());
     }
 
     #[test]
@@ -2895,5 +2924,222 @@ mod view {
         for t in ["abc@0", "abc@x", "", "a/b"] {
             assert_eq!(run(&[t], &[]).0, 2, "{t:?}");
         }
+    }
+}
+
+mod output_format {
+    use super::cairn;
+    use std::path::Path;
+    use std::process::Output;
+
+    fn run(db: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
+        let mut c = cairn();
+        for v in [
+            "CAIRN_ROLE",
+            "CAIRN_AGENT",
+            "CAIRN_SESSION",
+            "CLAUDE_CODE_SESSION_ID",
+            "CAIRN_PROJECT",
+        ] {
+            c.env_remove(v);
+        }
+        for (k, v) in env {
+            c.env(k, v);
+        }
+        c.current_dir(std::env::temp_dir());
+        c.arg("--db").arg(db).args(args).output().unwrap()
+    }
+
+    fn stdout(o: &Output) -> String {
+        assert_eq!(
+            o.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        String::from_utf8(o.stdout.clone()).unwrap()
+    }
+
+    fn is_json(s: &str) -> bool {
+        serde_json::from_str::<serde_json::Value>(s).is_ok()
+    }
+
+    /// Run `args` plus each way of asking for text; all must be non-JSON, and
+    /// `--json` must force JSON. Returns the `--text` output.
+    fn both_ways(db: &Path, args: &[&str]) -> String {
+        fn with<'a>(extra: &'a str, args: &[&'a str]) -> Vec<&'a str> {
+            std::iter::once(extra).chain(args.iter().copied()).collect()
+        }
+        let text = stdout(&run(db, &with("--text", args), &[]));
+        assert!(!is_json(&text), "{args:?} --text printed JSON: {text}");
+        let env_text = stdout(&run(db, args, &[("CAIRN_FORMAT", "text")]));
+        // Mutating commands differ run to run (new revision, comment id).
+        assert!(
+            !is_json(&env_text),
+            "{args:?} CAIRN_FORMAT=text printed JSON"
+        );
+        let json = stdout(&run(db, &with("--json", args), &[("CAIRN_FORMAT", "text")]));
+        assert!(is_json(&json), "{args:?} --json printed {json}");
+        // Captured stdout with agent variables set is JSON too.
+        let agent = stdout(&run(db, args, &[("CLAUDECODE", "1")]));
+        assert!(is_json(&agent), "{args:?} agent printed {agent}");
+        text
+    }
+
+    #[test]
+    fn every_command_has_a_text_form_and_json_is_forced_by_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("c.db");
+        let md = dir.path().join("a.md");
+        std::fs::write(&md, "# A\n\n## B\n\ntext\n").unwrap();
+        let md = md.to_str().unwrap();
+
+        // submit prints the bare ref. Each mutating command runs once per
+        // check, so ids are read from the first (JSON) run.
+        let o = run(&db, &["submit", md], &[]);
+        let id = serde_json::from_slice::<serde_json::Value>(&o.stdout).unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let t = stdout(&run(&db, &["--text", "submit", md], &[]));
+        let r = t.trim();
+        assert!(r.contains('@') && !r.contains(' ') && !is_json(&t), "{t}");
+
+        let t = both_ways(&db, &["edit", &id, md]);
+        assert!(!t.trim().contains(' '), "{t}");
+        assert!(t.trim().starts_with(&format!("{id}@")), "{t}");
+
+        let t = both_ways(&db, &["outline", &id]);
+        assert!(t.contains("A > B") && t.contains("bytes"), "{t}");
+        let t = both_ways(&db, &["list"]);
+        assert!(t.starts_with("ID"), "{t}");
+
+        let t = both_ways(&db, &["comment", "add", &id, "hello"]);
+        assert!(
+            t.starts_with('#') && t.contains("highest_comment_id"),
+            "{t}"
+        );
+        let t = both_ways(&db, &["comment", "list"]);
+        assert!(t.starts_with("highest_comment_id"), "{t}");
+        let thread = serde_json::from_slice::<serde_json::Value>(
+            &run(&db, &["comment", "add", &id, "t"], &[]).stdout,
+        )
+        .unwrap()["thread_id"]
+            .as_i64()
+            .unwrap()
+            .to_string();
+        let t = both_ways(&db, &["comment", "resolve", &thread]);
+        assert!(t.contains("resolved"), "{t}");
+        let t = both_ways(&db, &["comment", "reopen", &thread]);
+        assert!(t.contains("open"), "{t}");
+
+        // html Bundle: the `get --out` file list.
+        let site = dir.path().join("site");
+        std::fs::create_dir(&site).unwrap();
+        std::fs::write(site.join("index.html"), "<h1>x</h1>").unwrap();
+        let o = run(&db, &["submit", site.to_str().unwrap()], &[]);
+        let hid = serde_json::from_slice::<serde_json::Value>(&o.stdout).unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let out = dir.path().join("out");
+        let t = both_ways(&db, &["get", &hid, "--out", out.to_str().unwrap()]);
+        assert!(t.starts_with("index.html  text/html"), "{t}");
+
+        // delete is not repeatable, so each mode gets its own Artifact.
+        let submit = || {
+            let o = run(&db, &["submit", site.to_str().unwrap()], &[]);
+            serde_json::from_slice::<serde_json::Value>(&o.stdout).unwrap()["id"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        let (a, b, c) = (submit(), submit(), submit());
+        assert_eq!(
+            stdout(&run(&db, &["--text", "delete", &a, "--yes"], &[])),
+            format!("deleted {a}\n")
+        );
+        assert_eq!(
+            stdout(&run(
+                &db,
+                &["delete", &b, "--yes"],
+                &[("CAIRN_FORMAT", "text")]
+            )),
+            format!("deleted {b}\n")
+        );
+        let j = stdout(&run(
+            &db,
+            &["--json", "delete", &c, "--yes"],
+            &[("CAIRN_FORMAT", "text")],
+        ));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&j).unwrap()["deleted"][0],
+            c.as_str()
+        );
+    }
+
+    #[test]
+    fn get_stays_raw_in_every_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("c.db");
+        let md = dir.path().join("a.md");
+        std::fs::write(&md, "# A\n").unwrap();
+        let o = run(&db, &["submit", md.to_str().unwrap()], &[]);
+        let id = serde_json::from_slice::<serde_json::Value>(&o.stdout).unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        for (flag, env) in [("--json", None), ("--text", None), ("--json", Some("text"))] {
+            let envs: Vec<(&str, &str)> = env.map(|e| ("CAIRN_FORMAT", e)).into_iter().collect();
+            assert_eq!(stdout(&run(&db, &[flag, "get", &id], &envs)), "# A\n");
+        }
+    }
+
+    #[test]
+    fn json_is_the_default_when_stdout_is_captured() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("c.db");
+        assert!(is_json(&stdout(&run(&db, &["list"], &[]))));
+    }
+
+    #[test]
+    fn both_flags_and_bad_cairn_format_exit_two() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("c.db");
+        let o = run(&db, &["--json", "--text", "list"], &[]);
+        assert_eq!(o.status.code(), Some(2));
+        let o = run(&db, &["list"], &[("CAIRN_FORMAT", "yaml")]);
+        assert_eq!(o.status.code(), Some(2));
+        let v: serde_json::Value = serde_json::from_slice(&o.stderr).unwrap();
+        assert_eq!(v["code"], "usage");
+        // A flag decides before the env var is looked at.
+        let o = run(&db, &["--json", "list"], &[("CAIRN_FORMAT", "yaml")]);
+        assert_eq!(o.status.code(), Some(0));
+    }
+
+    #[test]
+    fn errors_are_json_when_stderr_is_captured_and_text_on_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("c.db");
+        let o = run(&db, &["outline", "nosuch"], &[]);
+        assert_eq!(o.status.code(), Some(3));
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&o.stderr).unwrap()["code"],
+            "not_found"
+        );
+        for o in [
+            run(&db, &["--text", "outline", "nosuch"], &[]),
+            run(&db, &["outline", "nosuch"], &[("CAIRN_FORMAT", "text")]),
+        ] {
+            assert_eq!(o.status.code(), Some(3));
+            let e = String::from_utf8(o.stderr).unwrap();
+            assert!(e.starts_with("error: ") && !is_json(&e), "{e}");
+        }
+        let o = run(
+            &db,
+            &["--json", "outline", "nosuch"],
+            &[("CAIRN_FORMAT", "text")],
+        );
+        assert!(is_json(&String::from_utf8(o.stderr).unwrap()));
     }
 }

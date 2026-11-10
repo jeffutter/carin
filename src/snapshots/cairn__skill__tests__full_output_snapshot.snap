@@ -6,14 +6,14 @@ expression: generate()
 name: cairn
 description: Submit documents, diagrams, images and html pages to cairn for human review, and read and answer the reviewer's Comments. Use when you want a human to review or comment on something you produced.
 cairn_version: 0.1.0
-hash: b6a2910bfb665784ce86b5f21b75173d3c50e153480bd514220c38553a372f1b
+hash: e28e9433064abe7ae402ebdaad9885ec073931c9c59ca78aaf5c48acc19e78bf
 ---
 
 # cairn
 
 cairn stores Artifacts (documents, images, diagrams, html Bundles) so a human can review them in a web UI and comment on them. You submit an Artifact, the human reads it and leaves Comments in Threads, and you read those Comments and answer them by editing the Artifact. Every edit creates a new Revision; nothing is overwritten.
 
-All commands print JSON on stdout (except `get`, which prints raw content). Errors print a JSON object with a stable `code` and a `message` on stderr and set the exit code listed under "Exit codes". Run `cairn <command> --help` for the details of any command; the reference below lists every flag.
+Inside an agent session (`AI_AGENT`, `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT` or `PI_CODING_AGENT` set) or whenever stdout is not a terminal, commands print JSON on stdout, except `get`, which prints raw content. To force JSON in another harness, pass `--json` or set `CAIRN_FORMAT=json`; `--text` or `CAIRN_FORMAT=text` forces human-readable text. Errors follow the same choice on stderr: a JSON object with a stable `code` and a `message`, and the exit code listed under "Exit codes". Run `cairn <command> --help` for the details of any command; the reference below lists every flag.
 
 ## Workflow
 
@@ -101,6 +101,8 @@ Accepted by every command.
 - `--session <SESSION>`: Session label (falls back to CLAUDE_CODE_SESSION_ID) [env: CAIRN_SESSION]
 - `--db <DB>`: Database path [env: CAIRN_DB]
 - `--project <PROJECT>`: Project root path or name (default: detected from the cwd) [env: CAIRN_PROJECT]
+- `--json`: Print JSON (the default in agent sessions and when output is not a terminal; env CAIRN_FORMAT=json|text)
+- `--text`: Print human-readable text (the default on a terminal outside agent sessions)
 
 ### Exit codes
 
@@ -114,7 +116,7 @@ Accepted by every command.
 | 5 | `comment list --wait` timed out with nothing new |
 | 6 | Conflict: `edit --base` named a stale Revision |
 
-`cairn skill --check` also exits 1 when the installed skill is stale. Errors print `{"code": ..., "message": ...}` as JSON on stderr.
+`cairn skill --check` also exits 1 when the installed skill is stale. In JSON mode errors print `{"code": ..., "message": ...}` on stderr.
 
 ### Commands
 
@@ -191,7 +193,6 @@ cairn list [OPTIONS]
 - `--open`: Only Artifacts with open Threads
 - `--older-than <DURATION>`: Only Artifacts last updated longer ago than this: 30d, 12h, 90m, 45s, 2w
 - `--limit <LIMIT>`: Maximum rows [default: 50]
-- `--text`: Print a table instead of JSON
 - `--all-projects`: Show Artifacts of every Project
 - `--all-worktrees`: Also show Artifacts of every linked worktree of the Project
 - `--project-root <PATH>`: Only the Project with this root path (narrows a name shared by several)
@@ -251,7 +252,6 @@ cairn comment list [OPTIONS] [TARGET]
 - `--since <COMMENT_ID>`: Only Threads holding a Comment newer than this id, with all their replies; the open/--all rule still applies
 - `--wait`: Block until something newer than --since (default: the highest Comment id now) exists; exit 5 on timeout
 - `--timeout <SECS>`: Seconds to wait before giving up [default: 60]
-- `--text`: Print a table instead of JSON
 - `--all-projects`: Show Artifacts of every Project
 - `--all-worktrees`: Also show Artifacts of every linked worktree of the Project
 - `--project-root <PATH>`: Only the Project with this root path (narrows a name shared by several)

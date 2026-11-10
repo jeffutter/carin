@@ -51,13 +51,12 @@ pub fn run(check: Option<&str>) -> Result<u8, Error> {
             Ok(0)
         }
         Some(path) => {
-            let installed = std::fs::read_to_string(path).map_err(|e| {
-                if e.kind() == std::io::ErrorKind::NotFound {
-                    Error::NotFound(format!("{path}: no such file"))
-                } else {
-                    Error::Unexpected(format!("{path}: {e}"))
-                }
-            })?;
+            // A missing file is stale: there is no current installed copy.
+            let installed = match std::fs::read_to_string(path) {
+                Ok(text) => text,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(1),
+                Err(e) => return Err(Error::Unexpected(format!("{path}: {e}"))),
+            };
             // Any difference is stale: a new version or hash, or a hand edit.
             Ok(u8::from(installed != current))
         }
@@ -65,13 +64,42 @@ pub fn run(check: Option<&str>) -> Result<u8, Error> {
 }
 
 fn body() -> String {
-    let mut out = TEMPLATE.to_string();
-    for (slot, text) in PROSE {
-        out = out.replace(&format!("{{{{{slot}}}}}"), text.trim());
-    }
     let reference = reference();
-    let out = out.replace("{{reference}}", reference.trim_end());
-    format!("{}\n", out.trim_end())
+    let mut slots: Vec<(&str, &str)> = PROSE.iter().map(|(k, v)| (*k, v.trim())).collect();
+    slots.push(("reference", reference.trim_end()));
+    format!("{}\n", fill(TEMPLATE, &slots).trim_end())
+}
+
+/// Replaces each `{{name}}` in `template` with its value in a single pass:
+/// values are emitted without being re-scanned, so a value that contains
+/// `{{other}}` text is kept literally. A `{{name}}` with no matching slot is
+/// left verbatim (the `template_slots_are_all_filled` test catches that in
+/// the embedded template).
+fn fill(template: &str, slots: &[(&str, &str)]) -> String {
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(start) = rest.find("{{") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 2..];
+        let value = after.find("}}").and_then(|end| {
+            slots
+                .iter()
+                .find(|(k, _)| *k == &after[..end])
+                .map(|(_, v)| (end, *v))
+        });
+        match value {
+            Some((end, v)) => {
+                out.push_str(v);
+                rest = &after[end + 2..];
+            }
+            None => {
+                out.push_str("{{");
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 fn reference() -> String {
@@ -89,7 +117,7 @@ fn reference() -> String {
     }
     out.push_str(
         "\n`cairn skill --check` also exits 1 when the installed skill is stale. \
-Errors print `{\"code\": ..., \"message\": ...}` as JSON on stderr.\n",
+In JSON mode errors print `{\"code\": ..., \"message\": ...}` on stderr.\n",
     );
 
     out.push_str("\n### Commands\n");
@@ -315,11 +343,45 @@ mod tests {
         assert_eq!(run(Some(p)).unwrap(), 1);
         std::fs::write(&path, format!("{}x", generate())).unwrap();
         assert_eq!(run(Some(p)).unwrap(), 1);
+    }
+
+    #[test]
+    fn check_exits_1_when_the_file_is_missing() {
+        let dir = tempfile::tempdir().unwrap();
         let missing = dir.path().join("nope.md");
-        assert!(matches!(
-            run(Some(missing.to_str().unwrap())),
-            Err(Error::NotFound(_))
-        ));
+        assert_eq!(run(Some(missing.to_str().unwrap())).unwrap(), 1);
+    }
+
+    #[test]
+    fn fill_does_not_resubstitute_inserted_text() {
+        let out = fill(
+            "a {{x}} b {{y}} {{unknown}} {{",
+            &[("x", "see {{y}} and {{kinds}}"), ("y", "Y")],
+        );
+        assert_eq!(out, "a see {{y}} and {{kinds}} b Y {{unknown}} {{");
+    }
+
+    #[test]
+    fn template_slots_are_all_filled() {
+        let text = body();
+        for (slot, _) in PROSE {
+            assert!(!TEMPLATE.is_empty() && TEMPLATE.contains(&format!("{{{{{slot}}}}}")));
+        }
+        assert!(TEMPLATE.contains("{{reference}}"));
+        // Every `{{name}}` in the template is a known slot, so none survive.
+        let mut names: Vec<&str> = PROSE.iter().map(|(k, _)| *k).collect();
+        names.push("reference");
+        let mut rest = TEMPLATE;
+        while let Some(i) = rest.find("{{") {
+            let end = rest[i..].find("}}").expect("unclosed slot") + i;
+            assert!(
+                names.contains(&&rest[i + 2..end]),
+                "unknown slot {:?}",
+                &rest[i..end + 2]
+            );
+            rest = &rest[end + 2..];
+        }
+        assert!(!text.is_empty());
     }
 
     #[test]

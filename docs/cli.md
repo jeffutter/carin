@@ -21,6 +21,7 @@ cairn view <id>[@rev]
 | `--session <label>` | `CAIRN_SESSION`, then `CLAUDE_CODE_SESSION_ID` | none |
 | `--db <path>` | `CAIRN_DB` | `$XDG_DATA_HOME/cairn/cairn.db` |
 | `--project <path-or-name>` | `CAIRN_PROJECT` | detected from the cwd |
+| `--json` / `--text` | `CAIRN_FORMAT=json\|text` | decided per [Output contract](#output-contract) |
 
 Role is attribution only: both roles may run every command, including `delete`.
 
@@ -30,10 +31,30 @@ Role is attribution only: both roles may run every command, including `delete`.
 
 ## Output contract
 
-- JSON on stdout for every command; errors as JSON on stderr with a stable `code` shared with the API.
-- Exception: `get` prints raw content (markdown or diagram source) to stdout.
-- `--text` gives a human table for `list` and `comment list`.
-- Command shapes are the same serialized core types the API returns.
+Every command's result is one typed value that is rendered as JSON or as text by a single output layer (`src/output.rs`). The format is decided once, per stream, in `output::decide`; first match wins:
+
+1. `--json` or `--text` (global; giving both exits 2).
+2. `CAIRN_FORMAT=json|text` (any other non-empty value exits 2).
+3. An agent session: any of `AI_AGENT`, `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, `PI_CODING_AGENT` set to a non-empty value gives JSON. Claude Code sets the first three; pi sets `AI_AGENT=pi` and `PI_CODING_AGENT=true` (pi.dev/docs/latest/environment-variables). For another harness, add its variable to `output::AGENT_ENV_VARS`, or export `CAIRN_FORMAT=json` there.
+4. Otherwise text if the stream is a terminal, JSON if not (a pipe, a file, captured output).
+
+Errors on stderr use the same decision with stderr's terminal-ness: JSON `{"code", "message"}` with a stable `code` shared with the API, or on a terminal (and with `--text` / `CAIRN_FORMAT=text`) one line `error: <message>`. Exit codes do not depend on the format. A parse error that happens before the flags are known uses the environment and stderr only.
+
+JSON shapes are the same serialized core types the API returns. `get` prints raw content (markdown or diagram source) in every mode; only the file list of an image or html `get --out` follows the format. `view` prints the URL and `skill` prints SKILL.md in every mode.
+
+Text forms:
+
+| Command | Text |
+| --- | --- |
+| `submit`, `edit` | the ref: `4hk8zc4q@1` |
+| `list` | the table described under [list](#list) |
+| `delete` | `deleted <id> <id>...` |
+| `outline` | one line per heading, indented by level: full path, then `(N bytes)` |
+| `get --out` | `path  media_type  N bytes` per file |
+| `comment add` | `#12 abc123@2` (`#13 reply in #12 abc123@2` for a reply, `(stale, latest is @3)` appended when stale), then `highest_comment_id N` |
+| `comment resolve`, `reopen` | `#12 abc123@2 resolved` (or `open`) |
+| `comment list` | `highest_comment_id N`, then one line per Thread (`#id ref status author location [role]: first line`) with its replies indented below |
+| `serve` startup | `ui`, `content` and `reviewer` lines |
 
 ## Exit codes
 
@@ -73,7 +94,7 @@ One Rust table (an enum with descriptions) drives the CLI error handling and the
 
 Newest activity first. Each row: id, Kind, name, latest Revision, open Thread count, author, stored bytes, last-updated time, and project and worktree.
 
-Output is `{"items": [...]}`, the same shape as `GET /api/v1/artifacts`. Stored bytes is the sum of the distinct blobs any Revision of the Artifact references. `--session` (the global flag, not the `CLAUDE_CODE_SESSION_ID` fallback) and `--mine` match the Session or author of the latest Revision (the one the author column shows); `--mine` uses the caller's Session if it has one, else its author. `--older-than` takes `30d`, `12h`, `90m`, `45s` or `2w` and compares last-updated. `--text` columns: id, kind, name, rev, open, author, bytes, updated, project, worktree (`-` for null).
+Output is `{"artifacts": [...]}` (the API envelope is `{"items": [...]}`; the row type is the same). Stored bytes is the sum of the distinct blobs any Revision of the Artifact references. `--session` (the global flag, not the `CLAUDE_CODE_SESSION_ID` fallback) and `--mine` match the Session or author of the latest Revision (the one the author column shows); `--mine` uses the caller's Session if it has one, else its author. `--older-than` takes `30d`, `12h`, `90m`, `45s` or `2w` and compares last-updated. `--text` (a global flag) prints a table with columns: id, kind, name, rev, open, author, bytes, updated, project, worktree (`-` for null).
 
 Filters: `--kind`, `--session`, `--mine`, `--open` (only Artifacts with an open Thread), `--older-than <duration>`, `--limit` (default 50), plus the scoping flags above. No cursor in v1. Defaults to the detected scope; unscoped outside a project.
 

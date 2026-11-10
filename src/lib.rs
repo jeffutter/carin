@@ -11,6 +11,7 @@ pub mod error;
 pub mod ids;
 pub mod kind;
 pub mod limits;
+pub mod output;
 pub mod scope;
 pub mod sections;
 pub mod serve;
@@ -21,6 +22,7 @@ use std::io::{Read, Write};
 
 use cli::{Command, CommentAction, Context};
 use error::Error;
+use output::{Deleted, FileEntry, Files, Format, Listing, emit};
 
 /// Read a submitted path: a file, a directory (a Bundle) or `-` for stdin.
 /// A single file is returned under its own file name, or `-` for stdin.
@@ -105,9 +107,9 @@ fn view_url(target: &str, url: Option<&str>) -> Result<String, Error> {
 }
 
 /// Run a command; the Ok value is the exit code (0, or 5 for a wait timeout).
-pub fn run(command: Command, ctx: &Context) -> Result<u8, Error> {
+pub fn run(command: Command, ctx: &Context, fmt: Format) -> Result<u8, Error> {
     if let Command::Comment { action } = command {
-        return run_comment(action, ctx);
+        return run_comment(action, ctx, fmt);
     }
     if let Command::Serve {
         port,
@@ -116,7 +118,7 @@ pub fn run(command: Command, ctx: &Context) -> Result<u8, Error> {
     } = command
     {
         let (ui, content) = serve::resolve_ports(port, content_port)?;
-        return serve::serve(&ctx.db_path, ui, content, &reviewer_name);
+        return serve::serve(&ctx.db_path, ui, content, &reviewer_name, fmt);
     }
     if let Command::Skill { check } = command {
         return skill::run(check.as_deref());
@@ -194,7 +196,7 @@ pub fn run(command: Command, ctx: &Context) -> Result<u8, Error> {
                     scope,
                 },
             )?;
-            println!("{}", serde_json::to_string(&r).expect("ref serializes"));
+            emit(fmt, &r);
             Ok(0)
         }
         Command::Edit {
@@ -223,7 +225,7 @@ pub fn run(command: Command, ctx: &Context) -> Result<u8, Error> {
                 }
                 None => artifact::edit(&mut conn, ctx, &id, input, base, &addresses)?,
             };
-            println!("{}", serde_json::to_string(&r).expect("ref serializes"));
+            emit(fmt, &r);
             Ok(0)
         }
         Command::List {
@@ -232,7 +234,6 @@ pub fn run(command: Command, ctx: &Context) -> Result<u8, Error> {
             open,
             older_than,
             limit,
-            text,
             all_projects,
             all_worktrees,
             project_root,
@@ -267,14 +268,7 @@ pub fn run(command: Command, ctx: &Context) -> Result<u8, Error> {
             };
             let conn = db::open(&ctx.db_path)?;
             let rows = artifact::list(&conn, &filter)?;
-            if text {
-                print!("{}", list_table(&rows));
-            } else {
-                println!(
-                    "{}",
-                    serde_json::json!(artifact::ArtifactList { items: rows })
-                );
-            }
+            emit(fmt, &Listing { artifacts: &rows });
             Ok(0)
         }
         Command::Delete { ids, yes } => {
@@ -290,7 +284,7 @@ pub fn run(command: Command, ctx: &Context) -> Result<u8, Error> {
             }
             let mut conn = db::open(&ctx.db_path)?;
             let deleted = artifact::delete(&mut conn, &ids)?;
-            println!("{}", serde_json::json!({ "deleted": deleted }));
+            emit(fmt, &Deleted { deleted });
             Ok(0)
         }
         Command::Comment { .. }
@@ -303,7 +297,7 @@ pub fn run(command: Command, ctx: &Context) -> Result<u8, Error> {
             let (id, rev) = artifact::parse_target(&target)?;
             let conn = db::open(&ctx.db_path)?;
             let text = artifact::markdown_text(&conn, &id, rev)?;
-            println!("{}", serde_json::json!(sections::outline(&text)));
+            emit(fmt, &sections::outline(&text));
             Ok(0)
         }
         Command::Get {
@@ -325,7 +319,7 @@ pub fn run(command: Command, ctx: &Context) -> Result<u8, Error> {
                     ))
                 })?;
                 let listing = write_out(std::path::Path::new(&out), &files)?;
-                println!("{}", serde_json::json!({ "files": listing }));
+                emit(fmt, &Files { files: listing });
                 return Ok(0);
             }
             if out.is_some() {
@@ -361,7 +355,7 @@ pub fn run(command: Command, ctx: &Context) -> Result<u8, Error> {
 fn write_out(
     dir: &std::path::Path,
     files: &[artifact::StoredFile],
-) -> Result<Vec<serde_json::Value>, Error> {
+) -> Result<Vec<FileEntry>, Error> {
     use std::collections::BTreeSet;
     let io = |p: &std::path::Path, e: std::io::Error| {
         Error::Unexpected(format!("cannot write {}: {e}", p.display()))
@@ -467,15 +461,16 @@ fn write_out(
             let _ = std::fs::remove_file(&tmp);
             return Err(io(&dest, e));
         }
-        listing.push(serde_json::json!({
-            "path": f.path, "media_type": f.media_type, "size": f.size
-        }));
+        listing.push(FileEntry {
+            path: f.path.clone(),
+            media_type: f.media_type.clone(),
+            size: f.size,
+        });
     }
     Ok(listing)
 }
 
-fn run_comment(action: CommentAction, ctx: &Context) -> Result<u8, Error> {
-    let print = |v: serde_json::Value| println!("{v}");
+fn run_comment(action: CommentAction, ctx: &Context, fmt: Format) -> Result<u8, Error> {
     let action_kind = match &action {
         CommentAction::Resolve { .. } => "resolve",
         _ => "",
@@ -492,7 +487,7 @@ fn run_comment(action: CommentAction, ctx: &Context) -> Result<u8, Error> {
             let mut conn = db::open(&ctx.db_path)?;
             let locator = comments::Locator { lines, section };
             let r = comments::add(&mut conn, ctx, &target, &body, &locator, reply)?;
-            print(serde_json::to_value(r).expect("added serializes"));
+            emit(fmt, &r);
         }
         CommentAction::Resolve { thread_id } | CommentAction::Reopen { thread_id } => {
             let status = if matches!(action_kind, "resolve") {
@@ -502,7 +497,7 @@ fn run_comment(action: CommentAction, ctx: &Context) -> Result<u8, Error> {
             };
             let mut conn = db::open(&ctx.db_path)?;
             let r = comments::set_status(&mut conn, thread_id, status)?;
-            print(serde_json::to_value(r).expect("thread serializes"));
+            emit(fmt, &r);
         }
         CommentAction::List {
             target,
@@ -510,7 +505,6 @@ fn run_comment(action: CommentAction, ctx: &Context) -> Result<u8, Error> {
             since,
             wait,
             timeout,
-            text,
             all_projects,
             all_worktrees,
             project_root,
@@ -552,92 +546,9 @@ fn run_comment(action: CommentAction, ctx: &Context) -> Result<u8, Error> {
             } else {
                 (comments::list(&conn, ctx, &q)?, 0)
             };
-            if text {
-                print!("{}", comment_table(&r));
-            } else {
-                print(serde_json::to_value(&r).expect("list serializes"));
-            }
+            emit(fmt, &r);
             return Ok(exit);
         }
     }
     Ok(0)
-}
-
-fn list_table(rows: &[artifact::ListRow]) -> String {
-    let header = [
-        "ID", "KIND", "NAME", "REV", "OPEN", "AUTHOR", "BYTES", "UPDATED", "PROJECT", "WORKTREE",
-    ];
-    let mut table: Vec<Vec<String>> = vec![header.iter().map(|s| s.to_string()).collect()];
-    for r in rows {
-        table.push(vec![
-            r.id.clone(),
-            r.kind.clone(),
-            r.name.clone(),
-            r.latest_revision.to_string(),
-            r.open_threads.to_string(),
-            r.author.clone(),
-            r.bytes.to_string(),
-            r.updated_at.clone(),
-            r.project.clone().unwrap_or_else(|| "-".into()),
-            r.worktree.clone().unwrap_or_else(|| "-".into()),
-        ]);
-    }
-    let widths: Vec<usize> = (0..header.len())
-        .map(|c| {
-            table
-                .iter()
-                .map(|row| row[c].chars().count())
-                .max()
-                .unwrap_or(0)
-        })
-        .collect();
-    let mut out = String::new();
-    for row in &table {
-        let line: Vec<String> = row
-            .iter()
-            .zip(&widths)
-            .map(|(cell, w)| format!("{cell:<w$}"))
-            .collect();
-        out.push_str(line.join("  ").trim_end());
-        out.push('\n');
-    }
-    out
-}
-
-fn comment_table(r: &comments::CommentList) -> String {
-    let mut out = format!("highest_comment_id {}\n", r.highest_comment_id);
-    for t in &r.threads {
-        let loc = match (
-            &t.locator.section_path,
-            t.locator.line_start,
-            t.locator.line_end,
-        ) {
-            (Some(p), _, _) => p.clone(),
-            (None, Some(a), Some(b)) if a == b => format!("L{a}"),
-            (None, Some(a), Some(b)) => format!("L{a}-{b}"),
-            _ => "-".into(),
-        };
-        out.push_str(&format!(
-            "#{} {}@{}{} {} {} {} [{}]: {}\n",
-            t.id,
-            t.artifact_id,
-            t.revision,
-            if t.stale { " (stale)" } else { "" },
-            t.status,
-            t.author,
-            loc,
-            t.role,
-            t.body.lines().next().unwrap_or("")
-        ));
-        for rep in &t.replies {
-            out.push_str(&format!(
-                "    #{} {} [{}]: {}\n",
-                rep.id,
-                rep.author,
-                rep.role,
-                rep.body.lines().next().unwrap_or("")
-            ));
-        }
-    }
-    out
 }

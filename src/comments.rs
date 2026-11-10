@@ -327,10 +327,45 @@ pub enum WaitOutcome {
     TimedOut(CommentList),
 }
 
+/// The cursor a wait starts from: `q.since`, or with none the highest Comment
+/// id now, so a bare wait means "the next new Comment". Fails with NotFound
+/// for an unknown Artifact.
+pub fn wait_baseline(conn: &Connection, q: &ListQuery) -> Result<i64, Error> {
+    match q.since {
+        Some(n) => Ok(n),
+        None => {
+            if let Some(a) = &q.artifact {
+                latest_revision(conn, a)?;
+            }
+            highest_comment_id(conn)
+        }
+    }
+}
+
+/// One poll of a wait: [`list`] restricted to what is newer than `baseline`.
+/// With `exclude_own`, the caller's own Comments (same author and Session) do
+/// not count, so the replies `edit --addresses` writes do not wake the
+/// editor's own wait. A caller with no identity (the API) passes false.
+/// Reads its own snapshot, so a writer in another process is seen.
+pub fn poll_newer(
+    conn: &Connection,
+    ctx: &Context,
+    q: &ListQuery,
+    baseline: i64,
+    exclude_own: bool,
+) -> Result<CommentList, Error> {
+    let newer = ListQuery {
+        artifact: q.artifact.clone(),
+        all: q.all,
+        since: Some(baseline),
+        scope: q.scope.clone(),
+    };
+    list_inner(conn, ctx, &newer, exclude_own)
+}
+
 /// Block until [`list`] has something newer than `q.since`, polling every
-/// [`WAIT_POLL_MS`]. Without `since` the baseline is the highest Comment id at
-/// entry, so a bare wait means "the next new Comment". Each poll reads its own
-/// snapshot, so a writer in another process is seen.
+/// [`WAIT_POLL_MS`] (see [`wait_baseline`], [`poll_newer`]). The caller's own
+/// Comments do not count.
 pub fn wait(
     conn: &Connection,
     ctx: &Context,
@@ -339,22 +374,8 @@ pub fn wait(
 ) -> Result<WaitOutcome, Error> {
     // None when the timeout overflows Instant: wait without a deadline.
     let deadline = Instant::now().checked_add(timeout);
-    let baseline = match q.since {
-        Some(n) => n,
-        None => {
-            if let Some(a) = &q.artifact {
-                latest_revision(conn, a)?;
-            }
-            highest_comment_id(conn)?
-        }
-    };
-    let newer = ListQuery {
-        artifact: q.artifact.clone(),
-        all: q.all,
-        since: Some(baseline),
-        scope: q.scope.clone(),
-    };
-    let mut current = list_inner(conn, ctx, &newer, true)?;
+    let baseline = wait_baseline(conn, q)?;
+    let mut current = poll_newer(conn, ctx, q, baseline, true)?;
     loop {
         if !current.threads.is_empty() {
             return Ok(WaitOutcome::Ready(current));
@@ -371,7 +392,7 @@ pub fn wait(
             None => poll,
         };
         std::thread::sleep(nap);
-        current = list_inner(conn, ctx, &newer, true)?;
+        current = poll_newer(conn, ctx, q, baseline, true)?;
     }
 }
 

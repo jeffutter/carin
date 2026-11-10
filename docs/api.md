@@ -33,8 +33,8 @@ Create (`POST /artifacts`, 201) and edit (`PUT /artifacts/{id}`, 200) take `mult
 
 | `meta` field | Applies to | Meaning |
 | --- | --- | --- |
-| `kind` | create, required | `markdown`, `html`, `image` or `diagram`; any other value is a 422 |
-| `format` | create | `mermaid` or `svg`; required for a diagram, refused otherwise |
+| `kind` | create, required | `markdown`, `html`, `image` or `diagram`; any other value is a 400 |
+| `format` | create | `mermaid` or `svg`; required for a diagram and refused otherwise (422); any other value is a 400 |
 | `name` | create | Display name and stored path of a single-file Artifact; defaults to the file part's name, required with several files |
 | `project_root`, `project_name`, `worktree` | create | Scope as the CLI stores it: `project_root` and `worktree` are absolute paths; `project_name` alone is a 400 |
 | `base_revision` | edit | Refuse with a 409 unless this is still the latest Revision; the detail names the latest Revision and its author |
@@ -49,14 +49,14 @@ A write carrying an `Origin` header other than the request's own `Host` is a 403
 
 ## Reads and lists
 
-- Lists use the same filters as the CLI list (`kind`, `session`, `author`, `open`, `older_than`, `limit`) plus `project` (a name), `project_root` and `worktree` (absolute paths; `worktree` shows the root's Artifacts plus that Worktree's, as the CLI does from inside one). Unscoped by default, since there is no cwd to detect from. There is no `mine`; use `session`.
-- Response shape `{ "items": [...] }`. Default limit 50, maximum 200 (a limit outside 1 to 200 is a 422, not clamped), no cursor in v1. A single Artifact (`GET /artifacts/{id}`) is its list row plus `format` and `created_at`; the CLI `list` prints the same `{ "items": [...] }` envelope.
+- Lists use the same filters as the CLI list (`kind`, `session`, `author`, `open`, `older_than`, `limit`) plus `project` (a name), `project_root` and `worktree` (absolute paths; `worktree` shows the root's Artifacts plus that Worktree's, as the CLI does from inside one; `worktree` without `project` or `project_root` is a 400, since a Worktree belongs to a Project). An unknown `kind` is a 400. Unscoped by default, since there is no cwd to detect from. There is no `mine`; use `session`.
+- Response shape `{ "items": [...] }`. Default limit 50, maximum 200 (a limit outside 1 to 200 is a 422, not clamped), no cursor in v1. A single Artifact (`GET /artifacts/{id}`) is its list row plus `format` and `created_at`; the CLI `list` prints the same rows under `{ "artifacts": [...] }`.
 - Each Artifact in a list carries stored bytes and last-updated time.
 - File bytes are served from the UI port only as downloads, with `Content-Disposition: attachment` and `X-Content-Type-Options: nosniff`. Rendering untrusted html and svg inline is the content origin's job ([web-ui.md](web-ui.md#untrusted-content)), not this route's.
 
 ## Long poll
 
-`GET /artifacts/{id}/comments?since=<id>&wait=<secs>` returns when there are Comments past the cursor or the wait ends. `wait` is seconds, clamped to 300; `wait=true` (or empty) waits 60 and absent, `false` or `0` answers at once. Without `since` the cursor is the highest Comment id when the request arrived. A timeout is a plain 200 with an empty list and the same `highest_comment_id`. The server polls the database every 500 ms. No SSE or websocket in v1.
+`GET /artifacts/{id}/comments?since=<id>&wait=<secs>` returns when there are Comments past the cursor or the wait ends. `wait` is seconds, clamped to 300; `wait=true` (or empty) waits 60 and absent, `false` or `0` answers at once. Without `since` the cursor is the highest Comment id when the request arrived. A timeout is a plain 200 with an empty list and the same `highest_comment_id`. The server polls the database every 500 ms without holding a thread or connection between polls, and abandons the wait when the client disconnects. The API has no caller identity, so a Comment by any author, including one named `api`, ends a wait (the CLI's `--wait` ignores the caller's own Comments). No SSE or websocket in v1.
 
 ## Errors
 
@@ -71,4 +71,4 @@ RFC 9457 `application/problem+json` with a stable `code` shared with the CLI's J
 | (none) cross-origin write | 403 `forbidden` |
 | 1 unexpected | 500 |
 
-A malformed query string or path segment is a 400, an unknown `/api/v1` path a 404 and a wrong method a 405, all problem+json. Exit 5 has no error: a wait timeout is a 200.
+A malformed query string or path segment is a 400, an unknown `/api/v1` path a 404 and a wrong method a 405 with an `Allow` header, all problem+json. `HEAD` works on every `GET` route. A well-formed value the server refuses (a limit out of range, a bad embed, a missing format) is a 422; an unknown enum value (`kind`, `format`) is malformed, so a 400. Exit 5 has no error: a wait timeout is a 200.
