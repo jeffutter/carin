@@ -1,7 +1,7 @@
-cairn does not start its own web UI. The human runs `cairn serve` in a terminal; ask them to if they cannot open the Artifact. Never run `cairn serve` yourself, it does not return. Print the link to an Artifact for the human with:
+Only the human starts the web UI, by running `cairn serve` in a terminal. Ask them to run it when they cannot open the Artifact. Do not run `cairn serve` yourself, because it never returns. Print the link to an Artifact:
 
 ```sh
 cairn view abc123
 ```
 
-Without a running server the link does not load, so say which command to run.
+The link loads only while `cairn serve` runs. Tell the human to run `cairn serve` when it does not load.

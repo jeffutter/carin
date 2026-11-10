@@ -6,51 +6,51 @@ expression: generate()
 name: cairn
 description: Submit documents, diagrams, images and html pages to cairn for human review, and read and answer the reviewer's Comments. Use when you want a human to review or comment on something you produced.
 cairn_version: 0.1.0
-hash: e28e9433064abe7ae402ebdaad9885ec073931c9c59ca78aaf5c48acc19e78bf
+hash: 63c6700b6eec132e2f61347049e8766242e652fff69a846dcfa1f5c848363703
 ---
 
 # cairn
 
-cairn stores Artifacts (documents, images, diagrams, html Bundles) so a human can review them in a web UI and comment on them. You submit an Artifact, the human reads it and leaves Comments in Threads, and you read those Comments and answer them by editing the Artifact. Every edit creates a new Revision; nothing is overwritten.
+Use cairn to get a human's review of a document, image, diagram, or html page. Submit it as an Artifact. The human reads it in a web UI and writes Comments in Threads. Read the Comments and answer them by editing the Artifact. Each edit creates a new Revision.
 
-Inside an agent session (`AI_AGENT`, `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT` or `PI_CODING_AGENT` set) or whenever stdout is not a terminal, commands print JSON on stdout, except `get`, which prints raw content. To force JSON in another harness, pass `--json` or set `CAIRN_FORMAT=json`; `--text` or `CAIRN_FORMAT=text` forces human-readable text. Errors follow the same choice on stderr: a JSON object with a stable `code` and a `message`, and the exit code listed under "Exit codes". Run `cairn <command> --help` for the details of any command; the reference below lists every flag.
+Commands print JSON on stdout when any of `AI_AGENT`, `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, or `PI_CODING_AGENT` is set, or when stdout is not a terminal. `get` prints raw content instead. Pass `--json` or set `CAIRN_FORMAT=json` to force JSON. Pass `--text` or set `CAIRN_FORMAT=text` to force text. Errors on stderr follow the same format. JSON errors have a `code` and a `message`. Exit codes are listed under "Exit codes". Run `cairn <command> --help` for the flags of one command.
 
 ## Workflow
 
-1. Submit the document and note the ref it prints (`abc123@1`):
+1. Submit the document. Note the printed ref (`abc123@1`). The Artifact id is the part before `@`.
 
 ```sh
 cairn submit plan.md
 ```
 
-2. Tell the human the Artifact id, then wait for their Comments. `--wait` blocks until a Comment newer than the highest one now exists, and exits 5 if nothing arrives in time; on exit 5 just wait again:
+2. Tell the human the Artifact id. Wait for Comments. `--wait` blocks until a Comment newer than the highest existing one arrives. Exit 5 means none arrived in time. Run the command again.
 
 ```sh
 cairn comment list abc123 --wait
 ```
 
-3. Change the Artifact in response. Pass the Revision you last read as `--base` so you never overwrite a newer edit (exit 6 means it moved; read it again first). Pass the root Comment ids you addressed as `--addresses`; each named Thread gets an "addressed in abc123@2" reply and stays open for the human to resolve:
+3. Edit the Artifact. Pass the Revision number you last read as `--base`. Exit 6 means a newer Revision exists. Run `cairn get abc123`, merge your change into it, and retry. Pass the root Comment ids you addressed as `--addresses`. Each named Thread gets the reply "addressed in abc123@2" and stays open for the human to resolve.
 
 ```sh
 cairn edit abc123 plan.md --base 1 --addresses 12,14
 ```
 
-4. Remember the highest Comment id you have seen and use `--since` so each round returns only new Threads:
+4. Note the highest Comment id you have seen. Wait again with `--since` set to that id. Each round returns only new Threads. Repeat from step 3.
 
 ```sh
 cairn comment list abc123 --since 14 --wait
 ```
 
-For a large markdown document, edit one Section instead of resending the whole file (see "Section paths"). You can also comment yourself with `cairn comment add` and reply in a Thread with `--reply`.
+For a large markdown document, edit one Section instead of resending the whole file (see "Section paths"). To comment yourself, run `cairn comment add`. To reply inside a Thread, add `--reply`.
 
 ## Choosing a Kind
 
-The Kind is inferred from the file extension. Pass `--kind` (and `--name`) when submitting from stdin.
+Cairn infers the Kind from the file extension. When submitting from stdin, pass `--kind` and `--name`.
 
-- `markdown`: prose, plans, specs, reports. The default choice, and the only Kind with Sections.
-- `image`: a picture file. Submit it on its own and embed it in markdown.
-- `diagram`: Mermaid (`.mmd`) or SVG source. SVG needs `--format svg`. Invalid Mermaid is rejected with exit 4.
-- `html`: a single `.html` file or a directory with an `index.html`, for an interactive page or a rendered report.
+- `markdown`: prose, plans, specs, reports. Choose it by default. Only markdown has Sections.
+- `image`: a picture file. Submit it alone, then embed it in markdown.
+- `diagram`: Mermaid (`.mmd`) or SVG source. Pass `--format svg` for SVG. Cairn rejects invalid Mermaid with exit 4.
+- `html`: a single `.html` file or a directory with an `index.html`. Use it for an interactive page or a rendered report.
 
 ```sh
 cairn submit diagram.mmd
@@ -60,17 +60,17 @@ cairn submit - --kind markdown --name notes
 
 ## Embeds
 
-A markdown Artifact can show an image or diagram Artifact with a `cairn:` reference in normal image syntax: `![alt](cairn:abc123)` for the latest Revision, or `![alt](cairn:abc123@2)` to pin one. Submit the image or diagram first, then reference its id. Local file paths are not uploaded. An embed naming a missing Artifact or Revision, or a markdown or html Artifact, is rejected with exit 4.
+To show an image or diagram Artifact inside markdown, submit that Artifact first. Then reference its id. Write `![alt](cairn:abc123)` for the latest Revision. Write `![alt](cairn:abc123@2)` to pin a Revision. Use `cairn:` references, because cairn does not upload local file paths. Exit 4 means the embed names a missing Artifact, a missing Revision, or a markdown or html Artifact.
 
 ## Section paths
 
-A Section is a markdown heading and everything under it, children included. Its path joins the heading texts with ` > `, for example `Design > Storage`. A path may be a suffix of the full path if that is unique. When it is not, add `#n` to pick the nth match (`Notes#2`). Inside a heading, `\`, `>` and a `#` before trailing digits are backslash-escaped (`Issue \#12`, `A \> B`). List the exact paths with:
+A Section is a markdown heading plus everything under it, children included. Its path joins the heading texts with ` > `, for example `Design > Storage`. Use a suffix of the path when the suffix is unique. Otherwise add `#n` to pick the nth match (`Notes#2`). Escape `\`, `>`, and a `#` before trailing digits in heading text with a backslash (`Issue \#12`, `A \> B`). List the exact paths:
 
 ```sh
 cairn outline abc123
 ```
 
-Use a path to read, edit or comment on one Section:
+Use a path to read, edit, or comment on one Section:
 
 ```sh
 cairn get abc123 --section "Design > Storage"
@@ -78,17 +78,17 @@ cairn edit abc123 storage.md --section "Design > Storage"
 cairn comment add abc123 "Why SQLite?" --section "Design > Storage"
 ```
 
-A replacement file must start with a heading of the same level and must not contain a shallower heading. An ambiguous or missing path exits 4.
+Start a replacement file with a heading at the same level as the Section. Use headings at that level or deeper only. An ambiguous or missing path exits 4.
 
-## The human side
+## Link the human to an Artifact
 
-cairn does not start its own web UI. The human runs `cairn serve` in a terminal; ask them to if they cannot open the Artifact. Never run `cairn serve` yourself, it does not return. Print the link to an Artifact for the human with:
+Only the human starts the web UI, by running `cairn serve` in a terminal. Ask them to run it when they cannot open the Artifact. Do not run `cairn serve` yourself, because it never returns. Print the link to an Artifact:
 
 ```sh
 cairn view abc123
 ```
 
-Without a running server the link does not load, so say which command to run.
+The link loads only while `cairn serve` runs. Tell the human to run `cairn serve` when it does not load.
 
 ## Reference
 

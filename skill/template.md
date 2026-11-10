@@ -18,7 +18,7 @@
 
 {{sections}}
 
-## The human side
+## Link the human to an Artifact
 
 {{serve}}
 
