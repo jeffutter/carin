@@ -122,7 +122,7 @@ pub enum Command {
         /// Print only this markdown Section ("A > B", children included)
         #[arg(long)]
         section: Option<String>,
-        /// Directory to write an image or html Artifact's files into
+        /// Directory to write an image or html Artifact's files into, or a diagram's rendered diagram.svg
         #[arg(long)]
         out: Option<String>,
         /// Print a diagram Artifact as SVG (mermaid is rendered; svg is printed as stored)

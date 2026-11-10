@@ -336,9 +336,27 @@ pub fn run(command: Command, ctx: &Context, fmt: Format) -> Result<u8, Error> {
                 emit(fmt, &Files { files: listing });
                 return Ok(0);
             }
-            if out.is_some() {
+            if kind == kind::Kind::Diagram {
+                if let Some(out) = &out {
+                    if section.is_some() {
+                        return Err(Error::Usage("--section is for markdown Artifacts".into()));
+                    }
+                    // Only the rendered SVG is written, never the stored
+                    // source (ADR 0005: the .mmd source is not served).
+                    let svg = diagram::render_revision(&conn, &id, rev)?;
+                    let file = artifact::StoredFile {
+                        path: "diagram.svg".into(),
+                        media_type: "image/svg+xml".into(),
+                        size: svg.len() as i64,
+                        bytes: svg.into_bytes(),
+                    };
+                    let listing = write_out(std::path::Path::new(out), &[file])?;
+                    emit(fmt, &Files { files: listing });
+                    return Ok(0);
+                }
+            } else if out.is_some() {
                 return Err(Error::Usage(format!(
-                    "--out is for image and html Artifacts, not {}",
+                    "--out is for image, html and diagram Artifacts, not {}",
                     kind.as_str()
                 )));
             }

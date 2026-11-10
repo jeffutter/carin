@@ -2754,18 +2754,93 @@ mod diagrams {
 
     #[test]
     #[cfg(not(cairn_pele_stub))]
-    fn diagrams_have_no_sections_or_out() {
+    fn diagrams_have_no_sections() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("c.db");
         let id = id_of(&run(&db, &["submit", &file(dir.path(), "a.mmd", FLOW)]));
         assert_eq!(run(&db, &["outline", &id]).status.code(), Some(4));
         let out = dir.path().join("o");
         assert_eq!(
-            run(&db, &["get", &id, "--out", out.to_str().unwrap()])
-                .status
-                .code(),
+            run(
+                &db,
+                &["get", &id, "--out", out.to_str().unwrap(), "--section", "A"]
+            )
+            .status
+            .code(),
             Some(2)
         );
+        assert!(!out.exists());
+    }
+
+    #[test]
+    #[cfg(not(cairn_pele_stub))]
+    fn get_out_writes_rendered_svg_for_mermaid_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("c.db");
+        let id = id_of(&run(&db, &["submit", &file(dir.path(), "a.mmd", FLOW)]));
+        let out = dir.path().join("o");
+        let o = run(&db, &["get", &id, "--out", out.to_str().unwrap()]);
+        assert_eq!(o.status.code(), Some(0));
+        let svg = std::fs::read_to_string(out.join("diagram.svg")).unwrap();
+        assert!(svg.contains("<svg"), "{svg}");
+        let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(v["files"][0]["path"], "diagram.svg");
+        assert_eq!(v["files"][0]["media_type"], "image/svg+xml");
+        assert_eq!(v["files"][0]["size"], svg.len());
+        let names: Vec<_> = std::fs::read_dir(&out).unwrap().collect();
+        assert_eq!(names.len(), 1, "stored source must not be written");
+    }
+
+    #[test]
+    fn get_out_writes_stored_svg_and_overwrites() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("c.db");
+        let f = file(dir.path(), "d.svg", SVG);
+        let id = id_of(&run(&db, &["submit", &f, "--format", "svg"]));
+        let out = dir.path().join("o");
+        std::fs::create_dir_all(&out).unwrap();
+        std::fs::write(out.join("diagram.svg"), "old").unwrap();
+        let o = run(&db, &["get", &id, "--out", out.to_str().unwrap()]);
+        assert_eq!(o.status.code(), Some(0));
+        assert_eq!(
+            std::fs::read(out.join("diagram.svg")).unwrap(),
+            SVG.as_bytes()
+        );
+        let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(v["files"][0]["size"], SVG.len());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn get_out_diagram_refuses_symlink_and_directory_clash() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("c.db");
+        let f = file(dir.path(), "d.svg", SVG);
+        let id = id_of(&run(&db, &["submit", &f, "--format", "svg"]));
+        let out = dir.path().join("o");
+        std::fs::create_dir_all(&out).unwrap();
+        let victim = dir.path().join("victim.txt");
+        std::fs::write(&victim, "precious").unwrap();
+        std::os::unix::fs::symlink(&victim, out.join("diagram.svg")).unwrap();
+        let o = run(&db, &["get", &id, "--out", out.to_str().unwrap()]);
+        assert_eq!(o.status.code(), Some(1));
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "precious");
+        std::fs::remove_file(out.join("diagram.svg")).unwrap();
+        std::fs::create_dir(out.join("diagram.svg")).unwrap();
+        let o = run(&db, &["get", &id, "--out", out.to_str().unwrap()]);
+        assert_eq!(o.status.code(), Some(1));
+    }
+
+    #[test]
+    fn get_out_still_rejected_for_markdown() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("c.db");
+        let id = id_of(&run(&db, &["submit", &file(dir.path(), "a.md", "# x\n")]));
+        let out = dir.path().join("o");
+        let o = run(&db, &["get", &id, "--out", out.to_str().unwrap()]);
+        assert_eq!(o.status.code(), Some(2));
+        assert!(String::from_utf8_lossy(&o.stderr).contains("--out is for"));
+        assert!(!out.exists());
     }
 
     #[test]

@@ -6,7 +6,7 @@ expression: generate()
 name: cairn
 description: Submit documents, diagrams, images and html pages to cairn for human review, and read and answer the reviewer's Comments. Use when you want a human to review or comment on something you produced.
 cairn_version: 0.1.0
-hash: a5de7b85537621c453a962156dddaf7e055899ac07afeb0c61de29280a5a825d
+hash: d9fc62e6c6a0d133bfdc337e00e239ed77f7fc6a1843b87da43d8da1d62d090b
 ---
 
 # cairn
@@ -157,7 +157,7 @@ cairn get [OPTIONS] <TARGET>
 
 - `<TARGET>`: `abc123` or `abc123@2`; defaults to the latest Revision
 - `--section <SECTION>`: Print only this markdown Section ("A > B", children included)
-- `--out <OUT>`: Directory to write an image or html Artifact's files into
+- `--out <OUT>`: Directory to write an image or html Artifact's files into, or a diagram's rendered diagram.svg
 - `--render`: Print a diagram Artifact as SVG (mermaid is rendered; svg is printed as stored)
 
 #### `cairn view`
