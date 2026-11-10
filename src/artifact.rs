@@ -649,6 +649,8 @@ pub struct ListRow {
     pub project: Option<String>,
     pub project_root: Option<String>,
     pub worktree: Option<String>,
+    /// Diagram format (`mermaid` or `svg`); null for other Kinds.
+    pub format: Option<String>,
 }
 
 /// What `list` prints on the CLI and `GET /api/v1/artifacts` returns.
@@ -662,8 +664,6 @@ pub struct ArtifactList {
 pub struct ArtifactDetail {
     #[serde(flatten)]
     pub row: ListRow,
-    /// Diagram format (`mermaid` or `svg`); null for other Kinds.
-    pub format: Option<String>,
     pub created_at: String,
 }
 
@@ -716,18 +716,14 @@ pub fn detail(conn: &Connection, id: &str) -> Result<ArtifactDetail, Error> {
     let row = list(conn, &f)?
         .pop()
         .ok_or_else(|| Error::NotFound(format!("no artifact {id}")))?;
-    let (format, created_at) = conn
+    let created_at = conn
         .query_row(
-            "SELECT format, created_at FROM artifacts WHERE id = ?1",
+            "SELECT created_at FROM artifacts WHERE id = ?1",
             [id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| r.get(0),
         )
         .map_err(db_err)?;
-    Ok(ArtifactDetail {
-        row,
-        format,
-        created_at,
-    })
+    Ok(ArtifactDetail { row, created_at })
 }
 
 fn revision_summaries(
@@ -804,7 +800,7 @@ pub fn list(conn: &Connection, f: &ListFilter) -> Result<Vec<ListRow>, Error> {
                 (SELECT author FROM revisions WHERE artifact_id = a.id ORDER BY number DESC LIMIT 1),
                 COALESCE((SELECT SUM(LENGTH(b.bytes)) FROM blobs b WHERE b.sha256 IN
                     (SELECT sha256 FROM revision_files WHERE artifact_id = a.id)), 0),
-                a.updated_at, a.project_name, a.worktree, a.project_root
+                a.updated_at, a.project_name, a.worktree, a.project_root, a.format
          FROM artifacts a
          WHERE (?1 IS NULL OR a.kind = ?1)
            AND (?2 IS NULL OR EXISTS (SELECT 1 FROM revisions r
@@ -851,6 +847,7 @@ pub fn list(conn: &Connection, f: &ListFilter) -> Result<Vec<ListRow>, Error> {
                     project: r.get(8)?,
                     worktree: r.get(9)?,
                     project_root: r.get(10)?,
+                    format: r.get(11)?,
                 })
             },
         )

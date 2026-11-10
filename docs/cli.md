@@ -92,7 +92,7 @@ One Rust table (an enum with descriptions) drives the CLI error handling and the
 
 ### list
 
-Newest activity first. Each row: id, Kind, name, latest Revision, open Thread count, author, stored bytes, last-updated time, and project and worktree.
+Newest activity first. Each row: id, Kind, name, latest Revision, open Thread count, author, stored bytes, last-updated time, and project and worktree, plus the diagram `format` (`mermaid` or `svg`; null for other Kinds) in the JSON output only.
 
 Output is `{"artifacts": [...]}` (the API envelope is `{"items": [...]}`; the row type is the same). Stored bytes is the sum of the distinct blobs any Revision of the Artifact references. `--session` (the global flag, not the `CLAUDE_CODE_SESSION_ID` fallback) and `--mine` match the Session or author of the latest Revision (the one the author column shows); `--mine` uses the caller's Session if it has one, else its author. `--older-than` takes `30d`, `12h`, `90m`, `45s` or `2w` and compares last-updated. `--text` (a global flag) prints a table with columns: id, kind, name, rev, open, author, bytes, updated, project, worktree (`-` for null).
 

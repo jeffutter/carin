@@ -2591,6 +2591,7 @@ mod diagrams {
 
     #[cfg(not(cairn_pele_stub))]
     const FLOW: &str = "flowchart LR\n A[Start] --> B{Ok?}\n B -->|yes| C[Done]\n";
+    const SVG_OK: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\"/>";
     const SVG: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\"><script>x</script></svg>";
 
     fn run(db: &Path, args: &[&str]) -> std::process::Output {
@@ -2643,6 +2644,39 @@ mod diagrams {
         let l = run(&db, &["list"]);
         let v: serde_json::Value = serde_json::from_slice(&l.stdout).unwrap();
         assert_eq!(v["artifacts"][0]["kind"], "diagram");
+    }
+
+    #[test]
+    fn list_json_carries_diagram_format_and_null_otherwise() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("c.db");
+        let svg = id_of(&run(
+            &db,
+            &[
+                "submit",
+                &file(dir.path(), "a.svg", SVG_OK),
+                "--format",
+                "svg",
+            ],
+        ));
+        let md = id_of(&run(&db, &["submit", &file(dir.path(), "n.md", "# Hi\n")]));
+        #[cfg(not(cairn_pele_stub))]
+        let mmd = id_of(&run(&db, &["submit", &file(dir.path(), "f.mmd", FLOW)]));
+        let l = run(&db, &["list"]);
+        let v: serde_json::Value = serde_json::from_slice(&l.stdout).unwrap();
+        let fmt = |id: &str| {
+            v["artifacts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|r| r["id"] == id)
+                .unwrap()["format"]
+                .clone()
+        };
+        assert_eq!(fmt(&svg), "svg");
+        assert!(fmt(&md).is_null());
+        #[cfg(not(cairn_pele_stub))]
+        assert_eq!(fmt(&mmd), "mermaid");
     }
 
     #[test]
