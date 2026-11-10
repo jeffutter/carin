@@ -2848,3 +2848,58 @@ mod serve {
         child.wait().ok();
     }
 }
+
+mod view {
+    use super::cairn;
+
+    fn run(args: &[&str], env: &[(&str, &str)]) -> (i32, String) {
+        let mut c = cairn();
+        for v in ["CAIRN_URL", "CAIRN_PORT"] {
+            c.env_remove(v);
+        }
+        for (k, v) in env {
+            c.env(k, v);
+        }
+        // Not touching the database: point it somewhere that does not exist.
+        c.args(["--db", "/nonexistent/dir/x.db", "view"]).args(args);
+        let out = c.output().unwrap();
+        (
+            out.status.code().unwrap(),
+            String::from_utf8(out.stdout).unwrap(),
+        )
+    }
+
+    #[test]
+    fn default_base_and_port_env() {
+        assert_eq!(
+            run(&["abc23"], &[]),
+            (0, "http://127.0.0.1:7878/a/abc23\n".into())
+        );
+        assert_eq!(
+            run(&["abc23@2"], &[("CAIRN_PORT", "9000")]),
+            (0, "http://127.0.0.1:9000/a/abc23@2\n".into())
+        );
+    }
+
+    #[test]
+    fn url_flag_beats_env_and_trailing_slash_is_trimmed() {
+        assert_eq!(
+            run(&["abc23"], &[("CAIRN_URL", "https://cairn.example/")]),
+            (0, "https://cairn.example/a/abc23\n".into())
+        );
+        assert_eq!(
+            run(
+                &["--url", "http://h:1//", "abc23@3"],
+                &[("CAIRN_URL", "https://cairn.example")]
+            ),
+            (0, "http://h:1/a/abc23@3\n".into())
+        );
+    }
+
+    #[test]
+    fn bad_target_is_a_usage_error() {
+        for t in ["abc@0", "abc@x", "", "a/b"] {
+            assert_eq!(run(&[t], &[]).0, 2, "{t:?}");
+        }
+    }
+}

@@ -251,7 +251,8 @@ mod tests {
         let needle = ["Connection", "::open"].concat();
         for entry in std::fs::read_dir(src).unwrap() {
             let path = entry.unwrap().path();
-            if path.file_name().unwrap() == "db.rs" {
+            // src/ui/ holds only assets.
+            if path.is_dir() || path.file_name().unwrap() == "db.rs" {
                 continue;
             }
             let text = std::fs::read_to_string(&path).unwrap();

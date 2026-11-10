@@ -1,10 +1,13 @@
 ---
 id: TASK-13
 title: 'Web UI: list and read-only Artifact page'
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@ralph'
 created_date: '2026-11-09T23:55:00Z'
-labels: []
+updated_date: '2026-11-10T01:52:00Z'
+labels:
+  - planned
 dependencies:
   - TASK-12
   - TASK-5
@@ -19,12 +22,30 @@ A Reviewer opens the UI and browses. The server-rendered UI (maud, htmx fragment
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 List and markdown page render real data; filters work
-- [ ] #2 Revision dropdown navigates Revisions; old-Revision banner links to the latest
-- [ ] #3 A markdown file containing raw HTML and script links renders inert (tests assert it)
-- [ ] #4 Titles, author names and comment text are escaped
-- [ ] #5 Response CSP on UI pages is strict with `frame-ancestors 'self'`
-- [ ] #6 The nix build embeds the pinned htmx; no network access at build time beyond the fetch
-- [ ] #7 Layout collapses to one column below about 800 px
-- [ ] #8 `view` prints the correct URL for all three base sources
+- [x] #1 List and markdown page render real data; filters work
+- [x] #2 Revision dropdown navigates Revisions; old-Revision banner links to the latest
+- [x] #3 A markdown file containing raw HTML and script links renders inert (tests assert it)
+- [x] #4 Titles, author names and comment text are escaped
+- [x] #5 Response CSP on UI pages is strict with `frame-ancestors 'self'`
+- [x] #6 The nix build embeds the pinned htmx; no network access at build time beyond the fetch
+- [x] #7 Layout collapses to one column below about 800 px
+- [x] #8 `view` prints the correct URL for all three base sources
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+SHIPPED by d8ce3f9. This plan is superseded; the ticket's final summary describes what actually landed.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented in src/ui.rs (maud, axum Query), UI CSP + router wiring in src/serve.rs, src/ui/style.css (prototype variant B look), htmx pinned 2.0.4 via fetchurl in flake.nix with HTMX_JS stub in build.rs, 'cairn view' in cli.rs/lib.rs. Markdown goes through pulldown-cmark events: raw HTML dropped, images become alt text, only http/https/mailto/relative hrefs kept, rel=noopener noreferrer on all anchors, top-level headings get id=sN for the outline. Open Thread counts per Section: Section locator match, else line Threads on the viewed Revision map to the innermost containing Section. Non-markdown Kinds show a placeholder (TASK-15). Verified: cargo test, clippy -D warnings, nix build (real 50 KB htmx served by the built binary, curl). AC7 is covered by a test that the CSS has the 800px media query; not checked in a real browser at both widths, and the htmx dropdown change-trigger was not exercised in a browser (the no-JS form path is tested).
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Server-rendered list page with project/kind filters, markdown Artifact page with revision dropdown, old-revision banner and outline sidebar with open-Thread counts, inert markdown rendering, strict UI CSP, pinned embedded htmx and CSS at hashed URLs, and cairn view.
+<!-- SECTION:FINAL_SUMMARY:END -->

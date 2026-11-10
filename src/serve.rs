@@ -1,6 +1,6 @@
 //! `cairn serve`: two loopback listeners in one process.
 //!
-//! The UI port serves a placeholder page and never any Artifact bytes. The
+//! The UI port serves the review UI (`ui`) and never any Artifact bytes. The
 //! content port serves every Agent-supplied byte at `/a/<id>/<rev>/<path>`,
 //! pinned to a Revision, under a per-Kind CSP, `nosniff` and the stored
 //! allowlisted Content-Type (ADR 0005). Every response from either port,
@@ -29,10 +29,10 @@ use crate::db;
 use crate::diagram::{self, Format};
 use crate::error::Error;
 use crate::kind::Kind;
+use crate::ui;
 
 const NOSNIFF: HeaderName = HeaderName::from_static("x-content-type-options");
 const SCRIPTLESS_CSP: &str = "sandbox; default-src 'none'; style-src 'unsafe-inline'";
-const UI_CSP: &str = "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'self'";
 /// Mermaid is served at this fixed path of its Revision; the source is not.
 const MERMAID_PATH: &str = "diagram.svg";
 
@@ -128,11 +128,6 @@ struct ContentState {
     renderer: Renderer,
 }
 
-#[derive(Clone)]
-struct UiState {
-    reviewer: String,
-}
-
 /// Run both listeners until ctrl-c. Both ports are bound before anything
 /// runs, so a taken port fails fast with a non-zero exit.
 pub fn serve(db_path: &Path, ui_port: u16, content_port: u16, reviewer: &str) -> Result<u8, Error> {
@@ -140,7 +135,7 @@ pub fn serve(db_path: &Path, ui_port: u16, content_port: u16, reviewer: &str) ->
     db::open(db_path)?;
     let ui_listener = bind_loopback(ui_port)?;
     let content_listener = bind_loopback(content_port)?;
-    let ui = ui_router(reviewer);
+    let ui = ui_router(db_path.to_path_buf(), reviewer, content_port);
     let content = content_router(db_path.to_path_buf(), ui_port, Renderer::start());
     println!(
         "{}",
@@ -177,62 +172,34 @@ pub fn serve(db_path: &Path, ui_port: u16, content_port: u16, reviewer: &str) ->
 }
 
 /// Set nosniff on every response and a default CSP where none was set.
-fn harden(mut res: Response, default_csp: &'static str) -> Response {
+fn harden(mut res: Response, default_csp: HeaderValue) -> Response {
     let h = res.headers_mut();
     h.insert(NOSNIFF, HeaderValue::from_static("nosniff"));
     if !h.contains_key(header::CONTENT_SECURITY_POLICY) {
-        h.insert(
-            header::CONTENT_SECURITY_POLICY,
-            HeaderValue::from_static(default_csp),
-        );
+        h.insert(header::CONTENT_SECURITY_POLICY, default_csp);
     }
     res
 }
 
-async fn harden_ui(res: Response) -> Response {
-    harden(res, UI_CSP)
-}
-
 async fn harden_content(res: Response) -> Response {
-    harden(res, SCRIPTLESS_CSP)
+    harden(res, HeaderValue::from_static(SCRIPTLESS_CSP))
 }
 
-fn not_found() -> Response {
-    (
-        StatusCode::NOT_FOUND,
-        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
-        "not found",
-    )
-        .into_response()
-}
+use crate::ui::not_found;
 
 // --- UI port ----------------------------------------------------------------
 
-fn escape_html(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#39;")
-}
-
-pub(crate) fn ui_router(reviewer: &str) -> Router {
-    Router::new()
-        .route("/", get(ui_index))
-        .fallback(|| async { not_found() })
-        .layer(map_response(harden_ui))
-        .with_state(UiState {
-            reviewer: reviewer.to_string(),
-        })
-}
-
-async fn ui_index(State(s): State<UiState>) -> Response {
-    let page = format!(
-        "<!doctype html><meta charset=\"utf-8\"><title>cairn</title>\
-         <h1>cairn</h1><p>Reviewing as {}.</p>",
-        escape_html(&s.reviewer)
-    );
-    ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], page).into_response()
+pub(crate) fn ui_router(db_path: PathBuf, reviewer: &str, content_port: u16) -> Router {
+    let csp = ui::csp(content_port);
+    ui::router(ui::UiState {
+        db_path,
+        reviewer: reviewer.to_string(),
+    })
+    .fallback(|| async { not_found() })
+    .layer(map_response(move |res: Response| {
+        let csp = csp.clone();
+        async move { harden(res, csp) }
+    }))
 }
 
 // --- content port -------------------------------------------------------------
@@ -396,7 +363,7 @@ mod tests {
             db::open(&db).unwrap();
             Fixture {
                 content: content_router(db.clone(), 7878, Renderer::start()),
-                ui: ui_router("rev"),
+                ui: ui_router(db.clone(), "rev", 7879),
                 db,
                 _dir: dir,
             }
@@ -628,10 +595,255 @@ mod tests {
         assert_eq!(h(&hd, "x-content-type-options"), "nosniff");
         let (st, hd, body) = get(&f.ui, "/").await;
         assert_eq!(st, StatusCode::OK);
-        assert_eq!(
-            h(&hd, "content-security-policy"),
-            "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'self'"
-        );
+        assert!(h(&hd, "content-security-policy").contains("frame-ancestors 'self'"));
         assert!(String::from_utf8(body).unwrap().contains("rev"));
+    }
+
+    fn text(b: &[u8]) -> String {
+        String::from_utf8(b.to_vec()).unwrap()
+    }
+
+    fn md(f: &Fixture, name: &str, body: &str) -> String {
+        f.submit(
+            name,
+            Kind::Markdown,
+            None,
+            files(&[("a.md", body.as_bytes())]),
+        )
+    }
+
+    fn comment(f: &Fixture, id: &str, body: &str, loc: crate::comments::Locator) {
+        let mut conn = db::open(&f.db).unwrap();
+        crate::comments::add(&mut conn, &ctx(&f.db), id, body, &loc, None).unwrap();
+    }
+
+    #[tokio::test]
+    async fn list_shows_rows_and_filters() {
+        let f = Fixture::new();
+        let a = md(&f, "plan <b>&\"'", "# T\n");
+        let img = f.submit("pic", Kind::Image, None, files(&[("p.png", PNG)]));
+        // Newest activity first.
+        let (st, _, body) = get(&f.ui, "/").await;
+        assert_eq!(st, StatusCode::OK);
+        let body = text(&body);
+        assert!(body.contains(&format!("href=\"/a/{a}\"")), "{body}");
+        assert!(body.contains(&format!("href=\"/a/{img}\"")));
+        assert!(body.find(&img).unwrap() < body.find(&a).unwrap());
+        // Names are escaped, never raw.
+        assert!(
+            body.contains("plan &lt;b&gt;&amp;&quot;'")
+                || body.contains("plan &lt;b&gt;&amp;&quot;&#39;"),
+            "{body}"
+        );
+        assert!(!body.contains("<b>&"));
+        let (_, _, body) = get(&f.ui, "/?kind=image").await;
+        let body = text(&body);
+        assert!(body.contains(&img) && !body.contains(&format!("/a/{a}\"")));
+        let (_, _, body) = get(&f.ui, "/?kind=nope").await;
+        assert_eq!(text(&body), "bad kind");
+        // htmx asks for the table only.
+        let res =
+            f.ui.clone()
+                .oneshot(
+                    Request::get("/?kind=image")
+                        .header("hx-target", "artifacts")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+        let frag = text(&res.into_body().collect().await.unwrap().to_bytes());
+        assert!(
+            frag.starts_with("<div id=\"artifacts\"") && !frag.contains("<html"),
+            "{frag}"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_filters_by_project() {
+        let f = Fixture::new();
+        let mut conn = db::open(&f.db).unwrap();
+        for (name, project) in [("one", "alpha"), ("two", "beta")] {
+            artifact::submit(
+                &mut conn,
+                &ctx(&f.db),
+                artifact::SubmitInput {
+                    name: name.into(),
+                    kind: Kind::Markdown,
+                    format: None,
+                    input: files(&[("a.md", b"# x\n")]),
+                    scope: Some(crate::scope::Scope {
+                        name: project.into(),
+                        root: format!("/r/{project}"),
+                        worktree: None,
+                    }),
+                },
+            )
+            .unwrap();
+        }
+        let (_, _, body) = get(&f.ui, "/?project=alpha").await;
+        let body = text(&body);
+        assert!(
+            body.contains(">one</a>") && !body.contains(">two</a>"),
+            "{body}"
+        );
+        // The dropdown still offers every project.
+        assert!(body.contains("value=\"beta\""));
+        let (_, _, body) = get(&f.ui, "/").await;
+        let body = text(&body);
+        assert!(body.contains(">one</a>") && body.contains(">two</a>"));
+    }
+
+    #[tokio::test]
+    async fn markdown_page_revisions_banner_and_outline() {
+        let f = Fixture::new();
+        let id = md(&f, "doc", "# Goal\n\none\n\n## Design\n\ntwo\n");
+        f.edit(
+            &id,
+            files(&[("a.md", b"# Goal\n\nONE\n\n## Design\n\ntwo\n")]),
+        );
+        comment(
+            &f,
+            &id,
+            "on design",
+            crate::comments::Locator {
+                lines: None,
+                section: Some("Goal > Design".into()),
+            },
+        );
+        comment(
+            &f,
+            &id,
+            "on line",
+            crate::comments::Locator {
+                lines: Some((3, 3)),
+                section: None,
+            },
+        );
+        let (st, _, latest) = get(&f.ui, &format!("/a/{id}")).await;
+        assert_eq!(st, StatusCode::OK);
+        let latest = text(&latest);
+        assert!(
+            latest.contains("ONE") && !latest.contains("Go to latest"),
+            "{latest}"
+        );
+        // Dropdown lists every Revision.
+        assert!(
+            latest.contains("value=\"1\"") && latest.contains("value=\"2\" selected"),
+            "{latest}"
+        );
+        // Outline with per-Section open Thread counts.
+        assert!(latest.contains("href=\"#s1\"") && latest.contains("href=\"#s2\""));
+        assert_eq!(latest.matches("pill open").count(), 2, "{latest}");
+        let (_, _, same) = get(&f.ui, &format!("/a/{id}@2")).await;
+        assert!(text(&same).contains("ONE"));
+        let (_, _, old) = get(&f.ui, &format!("/a/{id}@1")).await;
+        let old = text(&old);
+        assert!(old.contains("one") && !old.contains("ONE"));
+        assert!(
+            old.contains(&format!("href=\"/a/{id}@2\"")) && old.contains("not the latest"),
+            "{old}"
+        );
+        // The no-JS dropdown form redirects to the canonical URL.
+        let (st, hd, _) = get(&f.ui, &format!("/a/{id}?rev=1")).await;
+        assert_eq!(st, StatusCode::SEE_OTHER);
+        assert_eq!(h(&hd, "location"), format!("/a/{id}@1"));
+        for bad in [
+            format!("/a/{id}@3"),
+            format!("/a/{id}@0"),
+            "/a/nope".into(),
+            format!("/a/{id}?rev=9x"),
+        ] {
+            let (st, _, body) = get(&f.ui, &bad).await;
+            assert_eq!(st, StatusCode::NOT_FOUND, "{bad}");
+            assert_eq!(body, b"not found");
+        }
+    }
+
+    #[tokio::test]
+    async fn hostile_markdown_renders_inert_and_names_are_escaped() {
+        let f = Fixture::new();
+        let id = md(
+            &f,
+            "<script>alert('n')</script>",
+            "# <b>h</b>\n\n<script>alert(1)</script>\n\n<img src=x onerror=alert(1)>\n\n\
+             [j](javascript:alert(1)) [d](data:text/html,x) [e](https://example.com)\n",
+        );
+        let mut conn = db::open(&f.db).unwrap();
+        let mut c = ctx(&f.db);
+        c.author = "<i>eve</i>".into();
+        artifact::edit(&mut conn, &c, &id, files(&[("a.md", b"# x\n")]), None, &[]).unwrap();
+        for uri in [format!("/a/{id}@1"), format!("/a/{id}@2"), "/".to_string()] {
+            let (_, _, body) = get(&f.ui, &uri).await;
+            let body = text(&body);
+            assert!(!body.contains("<script>alert"), "{uri}: {body}");
+            assert!(!body.contains("<img") && !body.contains("onerror"), "{uri}");
+            assert!(
+                !body.contains("javascript:") && !body.contains("data:text"),
+                "{uri}"
+            );
+            assert!(!body.contains("<i>eve"), "{uri}: {body}");
+            assert!(!body.contains("<b>h"), "{uri}");
+        }
+        let (_, _, body) = get(&f.ui, &format!("/a/{id}@1")).await;
+        let body = text(&body);
+        assert!(
+            body.contains("&lt;script&gt;alert(&#39;n&#39;)&lt;/script&gt;")
+                || body.contains("&lt;script&gt;alert('n')&lt;/script&gt;"),
+            "{body}"
+        );
+        assert!(body.contains("href=\"https://example.com\" rel=\"noopener noreferrer\""));
+    }
+
+    #[tokio::test]
+    async fn ui_csp_is_strict_on_every_page() {
+        let f = Fixture::new();
+        let id = md(&f, "d", "# x\n");
+        for uri in ["/", &format!("/a/{id}"), "/nope", "/static/zzz/app.css"] {
+            let (_, hd, _) = get(&f.ui, uri).await;
+            let csp = h(&hd, "content-security-policy");
+            assert!(csp.contains("frame-ancestors 'self'"), "{uri}: {csp}");
+            assert!(
+                csp.contains("script-src 'self';") && csp.contains("style-src 'self';"),
+                "{csp}"
+            );
+            assert!(
+                !csp.contains("unsafe-inline") && !csp.contains("unsafe-eval"),
+                "{csp}"
+            );
+            assert_eq!(h(&hd, "x-content-type-options"), "nosniff");
+        }
+    }
+
+    #[tokio::test]
+    async fn static_assets_are_versioned_and_cached() {
+        let f = Fixture::new();
+        let (_, _, page) = get(&f.ui, "/").await;
+        let page = text(&page);
+        for (ext, ct) in [("htmx.js", "text/javascript"), ("app.css", "text/css")] {
+            let start = page.find("/static/").unwrap_or_else(|| panic!("{page}"));
+            let _ = start;
+            let href = page
+                .split('"')
+                .find(|p| p.starts_with("/static/") && p.ends_with(ext))
+                .unwrap_or_else(|| panic!("no {ext} in {page}"))
+                .to_string();
+            let (st, hd, body) = get(&f.ui, &href).await;
+            assert_eq!(st, StatusCode::OK, "{href}");
+            assert!(h(&hd, "content-type").starts_with(ct));
+            assert!(h(&hd, "cache-control").contains("immutable"));
+            assert!(!body.is_empty());
+            let stale = href.replace("/static/", "/static/x");
+            assert_eq!(get(&f.ui, &stale).await.0, StatusCode::NOT_FOUND);
+        }
+    }
+
+    #[tokio::test]
+    async fn non_markdown_kind_gets_a_placeholder_page() {
+        let f = Fixture::new();
+        let id = f.submit("pic", Kind::Image, None, files(&[("p.png", PNG)]));
+        let (st, _, body) = get(&f.ui, &format!("/a/{id}")).await;
+        assert_eq!(st, StatusCode::OK);
+        assert!(text(&body).contains("not shown in the UI yet"));
     }
 }

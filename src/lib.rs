@@ -13,6 +13,7 @@ pub mod limits;
 pub mod scope;
 pub mod sections;
 pub mod serve;
+pub mod ui;
 
 use std::io::{Read, Write};
 
@@ -77,6 +78,30 @@ fn cwd() -> std::path::PathBuf {
     std::env::current_dir().unwrap_or_default()
 }
 
+/// The UI URL of `target`. The base is `--url` / `CAIRN_URL`, else the default
+/// loopback UI port (`CAIRN_PORT` or 7878). No server is contacted.
+fn view_url(target: &str, url: Option<&str>) -> Result<String, Error> {
+    let (id, rev) = artifact::parse_target(target)?;
+    if !id.bytes().all(|b| b.is_ascii_alphanumeric()) {
+        return Err(Error::Usage(format!("bad artifact id in {target:?}")));
+    }
+    let base = match url.map(str::trim).filter(|u| !u.is_empty()) {
+        Some(u) => u.trim_end_matches('/').to_string(),
+        None => {
+            let port = std::env::var("CAIRN_PORT")
+                .ok()
+                .and_then(|p| p.trim().parse::<u16>().ok())
+                .filter(|p| *p >= 1)
+                .unwrap_or(7878);
+            format!("http://127.0.0.1:{port}")
+        }
+    };
+    Ok(match rev {
+        Some(n) => format!("{base}/a/{id}@{n}"),
+        None => format!("{base}/a/{id}"),
+    })
+}
+
 /// Run a command; the Ok value is the exit code (0, or 5 for a wait timeout).
 pub fn run(command: Command, ctx: &Context) -> Result<u8, Error> {
     if let Command::Comment { action } = command {
@@ -90,6 +115,10 @@ pub fn run(command: Command, ctx: &Context) -> Result<u8, Error> {
     {
         let (ui, content) = serve::resolve_ports(port, content_port)?;
         return serve::serve(&ctx.db_path, ui, content, &reviewer_name);
+    }
+    if let Command::View { target, url } = command {
+        println!("{}", view_url(&target, url.as_deref())?);
+        return Ok(0);
     }
     match command {
         Command::Submit {
@@ -255,7 +284,9 @@ pub fn run(command: Command, ctx: &Context) -> Result<u8, Error> {
             println!("{}", serde_json::json!({ "deleted": deleted }));
             Ok(0)
         }
-        Command::Comment { .. } | Command::Serve { .. } => unreachable!("handled above"),
+        Command::Comment { .. } | Command::Serve { .. } | Command::View { .. } => {
+            unreachable!("handled above")
+        }
         Command::Outline { target } => {
             let (id, rev) = artifact::parse_target(&target)?;
             let conn = db::open(&ctx.db_path)?;

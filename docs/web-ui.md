@@ -5,7 +5,8 @@ The review UI is where the Reviewer reads Artifacts and discusses them. It is se
 ## Routes and assets
 
 - The UI and `/api/v1` live on the UI port; routes include `/` (list) and `/a/<id>[@rev]` (Artifact page).
-- htmx is pinned in the flake with `fetchurl`. Hand-written CSS and htmx are embedded with `include_*` and served from the UI port at a versioned URL.
+- htmx is pinned in the flake with `fetchurl` (`HTMX_JS`, stubbed by `build.rs` when unset). Hand-written CSS (`src/ui/style.css`) and htmx are embedded with `include_str!` and served from the UI port at `/static/<content-hash>/{htmx.js,app.css}` with an immutable cache header.
+- `/?project=&kind=` filters the list (a plain GET form; htmx swaps only the table). `/a/<id>?rev=N` redirects to `/a/<id>@N`; the revision dropdown is that form.
 - Posting a Comment or resolving a Thread calls core directly. The author is `serve --reviewer-name` with role reviewer.
 
 ## Artifact list

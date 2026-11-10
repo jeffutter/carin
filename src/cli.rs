@@ -113,6 +113,13 @@ pub enum Command {
         #[arg(long)]
         out: Option<String>,
     },
+    /// Print the web UI URL of an Artifact (`abc123` or `abc123@2`) without checking a server
+    View {
+        target: String,
+        /// UI base URL (default: http://127.0.0.1:<CAIRN_PORT or 7878>)
+        #[arg(long, env = "CAIRN_URL")]
+        url: Option<String>,
+    },
     /// List a markdown Artifact's headings with their paths and sizes
     Outline { target: String },
     /// List Artifacts, newest activity first

@@ -42,9 +42,16 @@
         };
         peleJs = "${pele}/dist/pele.global.js";
 
+        # htmx, embedded with include_str! (src/ui.rs) and served from the UI port.
+        htmxJs = pkgs.fetchurl {
+          url = "https://cdn.jsdelivr.net/npm/htmx.org@2.0.4/dist/htmx.min.js";
+          hash = "sha256-4gndpcgjVHnzFm3vx3UOHbzVpcGAi3eS/C5nM3aPtEc=";
+        };
+
         commonArgs = {
           inherit src;
           PELE_JS = peleJs;
+          HTMX_JS = htmxJs;
           strictDeps = true;
           nativeBuildInputs = [ pkgs.clang ];
           buildInputs = lib.optionals pkgs.stdenv.hostPlatform.isDarwin [ pkgs.libiconv ];
@@ -83,6 +90,7 @@
             pkgs.sqlite
           ] ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.mold ];
           PELE_JS = peleJs;
+          HTMX_JS = htmxJs;
         } // envVars);
 
         formatter = pkgs.nixpkgs-fmt;
