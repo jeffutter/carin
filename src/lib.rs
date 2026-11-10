@@ -303,8 +303,9 @@ pub fn run(command: Command, ctx: &Context) -> Result<u8, Error> {
 /// Write a Revision's files under `dir` and return the file list.
 ///
 /// Two phases: validate everything without touching the disk, then write.
-/// Existing regular files are overwritten (re-running `get` into the same
-/// directory refreshes it). Symlinks beneath `dir` are never followed, and
+/// Existing regular files are replaced atomically via temp file and rename
+/// (re-running `get` into the same directory refreshes it; a failed write
+/// leaves the old file intact). Symlinks beneath `dir` are never followed, and
 /// file/directory clashes are refused before anything is written. `dir`
 /// itself may be a symlink, since the caller chose it.
 fn write_out(
@@ -369,26 +370,53 @@ fn write_out(
         }
     }
 
-    // Phase 2. An existing regular file is removed and recreated with
-    // create_new (O_EXCL), which fails rather than follows a symlink raced
-    // in after phase 1.
+    // Phase 2. Directories are created one component at a time with
+    // create_dir (not create_dir_all), refusing a symlink raced in after
+    // phase 1. Each file is written to a temp file beside its destination
+    // (create_new / O_EXCL) and renamed into place: rename replaces the
+    // destination entry without following a symlink there, and a failed
+    // write leaves any previous file intact.
+    std::fs::create_dir_all(dir).map_err(|e| io(dir, e))?;
     let mut listing = Vec::with_capacity(files.len());
     for f in files {
         let dest = dir.join(&f.path);
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| io(parent, e))?;
+        let mut cur = dir.to_path_buf();
+        let comps: Vec<&str> = f.path.split('/').collect();
+        for comp in &comps[..comps.len() - 1] {
+            cur.push(comp);
+            match std::fs::create_dir(&cur) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let m = std::fs::symlink_metadata(&cur).map_err(|e| io(&cur, e))?;
+                    if m.file_type().is_symlink() || !m.is_dir() {
+                        return Err(refuse(format!(
+                            "{} is not a plain directory",
+                            cur.display()
+                        )));
+                    }
+                }
+                Err(e) => return Err(io(&cur, e)),
+            }
         }
-        match std::fs::remove_file(&dest) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(io(&dest, e)),
+        let mut rnd = [0u8; 8];
+        getrandom::fill(&mut rnd)
+            .map_err(|e| Error::Unexpected(format!("cannot generate temp name: {e}")))?;
+        let suffix: String = rnd.iter().map(|b| format!("{b:02x}")).collect();
+        let base = comps[comps.len() - 1];
+        let tmp = dest.with_file_name(format!(".{base}.cairn-tmp-{suffix}"));
+        let written = (|| {
+            let mut h = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&tmp)?;
+            h.write_all(&f.bytes)?;
+            drop(h);
+            std::fs::rename(&tmp, &dest)
+        })();
+        if let Err(e) = written {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(io(&dest, e));
         }
-        let mut h = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&dest)
-            .map_err(|e| io(&dest, e))?;
-        h.write_all(&f.bytes).map_err(|e| io(&dest, e))?;
         listing.push(serde_json::json!({
             "path": f.path, "media_type": f.media_type, "size": f.size
         }));

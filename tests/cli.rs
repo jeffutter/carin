@@ -2354,6 +2354,70 @@ mod bundles {
         assert!(!out.join("logo.png").exists());
     }
 
+    #[test]
+    fn get_out_rerun_refreshes_and_leaves_no_temp_files() {
+        let d = tempfile::tempdir().unwrap();
+        let db = d.path().join("c.db");
+        let id = submit_site(d.path(), &db);
+        let out = d.path().join("out");
+        assert_eq!(code(&db, &["get", &id, "--out", s(&out)]), Some(0));
+        std::fs::write(out.join("index.html"), "stale").unwrap();
+        assert_eq!(code(&db, &["get", &id, "--out", s(&out)]), Some(0));
+        assert_ne!(
+            std::fs::read_to_string(out.join("index.html")).unwrap(),
+            "stale"
+        );
+        fn walk(p: &Path, n: &mut usize) {
+            for e in std::fs::read_dir(p).unwrap() {
+                let e = e.unwrap();
+                if e.file_name().to_string_lossy().contains("cairn-tmp") {
+                    *n += 1;
+                }
+                if e.file_type().unwrap().is_dir() {
+                    walk(&e.path(), n);
+                }
+            }
+        }
+        let mut n = 0;
+        walk(&out, &mut n);
+        assert_eq!(n, 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn get_out_failed_write_keeps_old_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let db = d.path().join("c.db");
+        let id = submit_site(d.path(), &db);
+        let out = d.path().join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        std::fs::write(out.join("index.html"), "old").unwrap();
+        std::fs::set_permissions(&out, std::fs::Permissions::from_mode(0o555)).unwrap();
+        // Root ignores directory permissions; skip the check then.
+        let writable = std::fs::File::create(out.join(".probe")).is_ok();
+        let c = code(&db, &["get", &id, "--out", s(&out)]);
+        std::fs::set_permissions(&out, std::fs::Permissions::from_mode(0o755)).unwrap();
+        if !writable {
+            assert_eq!(c, Some(1));
+            assert_eq!(
+                std::fs::read_to_string(out.join("index.html")).unwrap(),
+                "old"
+            );
+            let stray = std::fs::read_dir(&out)
+                .unwrap()
+                .filter(|e| {
+                    e.as_ref()
+                        .unwrap()
+                        .file_name()
+                        .to_string_lossy()
+                        .contains("cairn-tmp")
+                })
+                .count();
+            assert_eq!(stray, 0);
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn get_out_refuses_symlinked_directory() {
