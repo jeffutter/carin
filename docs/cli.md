@@ -67,7 +67,7 @@ One Rust table (an enum with descriptions) drives the CLI error handling and the
 
 ### get and outline
 
-`get <id>[@rev]` prints markdown or diagram source. `image` and `html` need `--out <dir>` and print a file list as JSON. `--section` is markdown only. `outline <id>[@rev]` prints headings, paths and sizes as JSON.
+`get <id>[@rev]` prints markdown or diagram source. `image` and `html` need `--out <dir>` and print a file list as JSON. `--section` is markdown only. `outline <id>[@rev]` prints `{"sections": [{"path": "A > B", "level": 2, "bytes": 120}]}`, one entry per heading in document order; `bytes` is the Section's size including children. A path that is not unique as a suffix carries `#n` (`Notes#2`) so it can be passed straight to `--section`. `edit <id> --section "A > B" <path|->` replaces that Section; the new text must start with a heading line. `--base` works with it.
 
 ### list
 

@@ -81,9 +81,19 @@ pub enum Command {
         /// Refuse unless this is still the latest Revision (exit 6)
         #[arg(long)]
         base: Option<i64>,
+        /// Replace only this markdown Section ("A > B"); the file must start with its heading
+        #[arg(long)]
+        section: Option<String>,
     },
     /// Print an Artifact's content: `abc123` or `abc123@2`
-    Get { target: String },
+    Get {
+        target: String,
+        /// Print only this markdown Section ("A > B", children included)
+        #[arg(long)]
+        section: Option<String>,
+    },
+    /// List a markdown Artifact's headings with their paths and sizes
+    Outline { target: String },
     /// List Artifacts, newest activity first
     List {
         /// Only this Kind

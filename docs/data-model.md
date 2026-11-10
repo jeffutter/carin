@@ -54,11 +54,12 @@ A Section is named by a path of heading texts, for example `Design > Storage > L
 
 - Segments match heading text exactly: case-sensitive, trimmed, inline markup stripped. A unique suffix of the path is accepted (`Limits`). No positional index is an address, because indexes shift on insert. There are no short section ids; heading paths are the only address.
 - A Section runs from its heading to the next heading of the same or a higher level, so it includes its children.
-- An ambiguous path fails and lists the candidates with their 1-based occurrence; retry with `Notes#2`. A section edit never guesses.
+- Candidates are the headings whose path ends with the query's segments, so `Notes` matches `Top > Notes` and a top-level `Notes` alike. More than one candidate fails and lists them with their 1-based occurrence; retry with `Notes#2` (the n-th candidate in document order). `outline` prints each path with the `#n` that resolves back to it whenever its path is not unique as a suffix. A section edit never guesses.
 - Parsing uses pulldown-cmark. Only top-level headings are boundaries (not those inside blockquotes or list items). Front matter and text before the first heading form an unaddressable preamble, changed only by a whole-document edit.
 - Replace: the replacement text includes the heading line and must start with a heading line. Renaming or re-levelling is an ordinary edit. Extra headings inside the replacement become subsections. A section edit splices into the latest Revision and stores a new full Revision; it fails if the path no longer matches.
+- Line endings: Section ranges are byte offsets into the stored text and CRLF documents parse like LF ones (covered by a test). A splice never rewrites existing bytes. The replacement is inserted verbatim, except that when the replaced Section uses CRLF its bare LF are converted to CRLF, so a Revision never mixes endings. A missing final newline on a replacement that is followed by more text is added in the document's style.
 - Read: a section read may target a given Revision (`abc123@3`).
-- Outline: lists every heading with its path and size, no ids.
+- Outline: lists every heading with its path and size, no ids. Size is the byte length of the Section, children included. `--section` and `outline` on a non-markdown Artifact, or on markdown that is not valid UTF-8, exit 4.
 
 ## Revisions
 

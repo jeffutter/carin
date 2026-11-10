@@ -6,6 +6,7 @@ pub mod error;
 pub mod ids;
 pub mod kind;
 pub mod limits;
+pub mod sections;
 
 use std::io::{Read, Write};
 
@@ -60,7 +61,12 @@ pub fn run(command: Command, ctx: &Context) -> Result<(), Error> {
             println!("{}", serde_json::to_string(&r).expect("ref serializes"));
             Ok(())
         }
-        Command::Edit { id, path, base } => {
+        Command::Edit {
+            id,
+            path,
+            base,
+            section,
+        } => {
             if id.contains('@') {
                 return Err(Error::Usage(
                     "edit takes a bare artifact id, not id@revision".into(),
@@ -68,7 +74,10 @@ pub fn run(command: Command, ctx: &Context) -> Result<(), Error> {
             }
             let bytes = read_input(&path)?;
             let mut conn = db::open(&ctx.db_path)?;
-            let r = artifact::edit(&mut conn, ctx, &id, bytes, base)?;
+            let r = match section {
+                Some(q) => artifact::section_edit(&mut conn, ctx, &id, &q, &bytes, base)?,
+                None => artifact::edit(&mut conn, ctx, &id, bytes, base)?,
+            };
             println!("{}", serde_json::to_string(&r).expect("ref serializes"));
             Ok(())
         }
@@ -125,10 +134,26 @@ pub fn run(command: Command, ctx: &Context) -> Result<(), Error> {
             println!("{}", serde_json::json!({ "deleted": deleted }));
             Ok(())
         }
-        Command::Get { target } => {
+        Command::Outline { target } => {
             let (id, rev) = artifact::parse_target(&target)?;
             let conn = db::open(&ctx.db_path)?;
-            let bytes = artifact::get(&conn, &id, rev)?;
+            let text = artifact::markdown_text(&conn, &id, rev)?;
+            println!(
+                "{}",
+                serde_json::json!({ "sections": sections::outline(&text) })
+            );
+            Ok(())
+        }
+        Command::Get { target, section } => {
+            let (id, rev) = artifact::parse_target(&target)?;
+            let conn = db::open(&ctx.db_path)?;
+            let bytes = match section {
+                Some(q) => {
+                    let text = artifact::markdown_text(&conn, &id, rev)?;
+                    sections::extract(&text, &q)?.as_bytes().to_vec()
+                }
+                None => artifact::get(&conn, &id, rev)?,
+            };
             let mut out = std::io::stdout().lock();
             out.write_all(&bytes)
                 .and_then(|_| out.flush())

@@ -722,3 +722,192 @@ mod list_delete {
         assert!(after < before / 2, "{before} -> {after}");
     }
 }
+
+mod sections {
+    use super::cairn;
+    use std::io::Write;
+    use std::process::Stdio;
+
+    fn base(db: &std::path::Path) -> std::process::Command {
+        let mut c = cairn();
+        for v in [
+            "CAIRN_ROLE",
+            "CAIRN_AGENT",
+            "CAIRN_SESSION",
+            "CLAUDE_CODE_SESSION_ID",
+            "CAIRN_DB",
+        ] {
+            c.env_remove(v);
+        }
+        c.arg("--db").arg(db);
+        c
+    }
+
+    fn json(b: &[u8]) -> serde_json::Value {
+        serde_json::from_slice(b).unwrap()
+    }
+
+    fn submit(
+        db: &std::path::Path,
+        dir: &std::path::Path,
+        name: &str,
+        text: &[u8],
+        _extra: &[&str],
+    ) -> String {
+        let f = dir.join(name);
+        std::fs::write(&f, text).unwrap();
+        let o = base(db).arg("submit").arg(&f).output().unwrap();
+        json(&o.stdout)["id"].as_str().unwrap().to_string()
+    }
+
+    const SECTIONED: &str = "---\ntitle: t\n---\n\npre\n\n# Top\n\nintro\n\n## Notes\n\none\n\n> ## Quoted\n\n## Other\n\no\n\n# Notes\n\ntwo\n";
+
+    fn run(db: &std::path::Path, args: &[&str]) -> std::process::Output {
+        base(db).args(args).output().unwrap()
+    }
+
+    fn rejected(out: &std::process::Output) -> String {
+        assert_eq!(
+            out.status.code(),
+            Some(4),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        json(&out.stderr)["message"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    #[test]
+    fn outline_lists_paths_and_sizes_without_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("c.db");
+        let a = submit(&db, dir.path(), "d.md", SECTIONED.as_bytes(), &[]);
+        let out = run(&db, &["outline", &a]);
+        assert_eq!(out.status.code(), Some(0));
+        let v = json(&out.stdout);
+        let paths: Vec<&str> = v["sections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["path"].as_str().unwrap())
+            .collect();
+        assert_eq!(paths, ["Top", "Top > Notes", "Top > Other", "Notes#2"]);
+        let e = &v["sections"][1];
+        assert_eq!(e["level"], 2);
+        assert_eq!(e["bytes"], "## Notes\n\none\n\n> ## Quoted\n\n".len());
+        assert!(!String::from_utf8_lossy(&out.stdout).contains("\"id\""));
+    }
+
+    #[test]
+    fn get_section_suffix_occurrence_and_revision() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("c.db");
+        let a = submit(&db, dir.path(), "d.md", SECTIONED.as_bytes(), &[]);
+        let out = run(&db, &["get", &a, "--section", "Top > Other"]);
+        assert_eq!(out.stdout, b"## Other\n\no\n\n");
+        // Suffix "Notes" matches both; the error lists numbered candidates.
+        let msg = rejected(&run(&db, &["get", &a, "--section", "Notes"]));
+        assert!(
+            msg.contains("Notes#1 = Top > Notes") && msg.contains("Notes#2 = Notes"),
+            "{msg}"
+        );
+        // The printed form of the top-level one.
+        let out = run(&db, &["get", &a, "--section", "Notes#2"]);
+        assert_eq!(out.stdout, b"# Notes\n\ntwo\n");
+        // Missing path.
+        rejected(&run(&db, &["get", &a, "--section", "Nope"]));
+        // From a given Revision.
+        let new = "# Top\n\nchanged\n";
+        let f = dir.path().join("n.md");
+        std::fs::write(&f, new).unwrap();
+        run(&db, &["edit", &a, f.to_str().unwrap()]);
+        let out = run(&db, &["get", &format!("{a}@1"), "--section", "Top > Other"]);
+        assert_eq!(out.stdout, b"## Other\n\no\n\n");
+        rejected(&run(&db, &["get", &format!("{a}@2"), "--section", "Other"]));
+    }
+
+    fn edit_section(db: &std::path::Path, args: &[&str], body: &str) -> std::process::Output {
+        let mut child = base(db)
+            .args(["edit"])
+            .args(args)
+            .arg("-")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(body.as_bytes())
+            .unwrap();
+        child.wait_with_output().unwrap()
+    }
+
+    #[test]
+    fn edit_section_splices_into_a_new_revision() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("c.db");
+        let a = submit(&db, dir.path(), "d.md", SECTIONED.as_bytes(), &[]);
+        let out = edit_section(&db, &[&a, "--section", "Top"], "# Top v2\n\nnew\n\n");
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(json(&out.stdout)["revision"], 2);
+        let r2 = run(&db, &["get", &format!("{a}@2")]).stdout;
+        let want = SECTIONED.replace(
+            "# Top\n\nintro\n\n## Notes\n\none\n\n> ## Quoted\n\n## Other\n\no\n\n",
+            "# Top v2\n\nnew\n\n",
+        );
+        assert_eq!(String::from_utf8(r2).unwrap(), want);
+        assert_eq!(
+            run(&db, &["get", &format!("{a}@1")]).stdout,
+            SECTIONED.as_bytes()
+        );
+        // The path no longer matches in the latest Revision.
+        rejected(&edit_section(&db, &[&a, "--section", "Top"], "# Top\n"));
+        // Replacement must start with a heading.
+        rejected(&edit_section(
+            &db,
+            &[&a, "--section", "Top v2"],
+            "no heading\n",
+        ));
+        // Stale base still conflicts.
+        let out = edit_section(&db, &[&a, "--section", "Top v2", "--base", "1"], "# X\n");
+        assert_eq!(out.status.code(), Some(6));
+        let out = edit_section(&db, &[&a, "--section", "Top v2", "--base", "2"], "# X\n");
+        assert_eq!(out.status.code(), Some(0));
+    }
+
+    #[test]
+    fn sections_on_non_markdown_exit_four() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("c.db");
+        let a = submit(&db, dir.path(), "d.md", SECTIONED.as_bytes(), &[]);
+        rusqlite::Connection::open(&db)
+            .unwrap()
+            .execute("UPDATE artifacts SET kind = 'diagram' WHERE id = ?1", [&a])
+            .unwrap();
+        rejected(&run(&db, &["outline", &a]));
+        rejected(&run(&db, &["get", &a, "--section", "Top"]));
+        rejected(&edit_section(&db, &[&a, "--section", "Top"], "# Top\n"));
+        assert_eq!(run(&db, &["get", &a]).status.code(), Some(0));
+    }
+
+    #[test]
+    fn edit_section_on_crlf_document_keeps_crlf() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("c.db");
+        let doc = "# A\r\n\r\nx\r\n\r\n# B\r\n\r\ny\r\n";
+        let a = submit(&db, dir.path(), "d.md", doc.as_bytes(), &[]);
+        edit_section(&db, &[&a, "--section", "A"], "# A\nnew\n");
+        let out = run(&db, &["get", &a]).stdout;
+        assert_eq!(out, b"# A\r\nnew\r\n# B\r\n\r\ny\r\n");
+    }
+}

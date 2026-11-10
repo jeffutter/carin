@@ -12,6 +12,7 @@ use crate::error::Error;
 use crate::ids::new_artifact_id;
 use crate::kind::Kind;
 use crate::limits;
+use crate::sections;
 
 pub struct SubmitInput {
     pub name: String,
@@ -113,18 +114,69 @@ pub fn edit(
     bytes: Vec<u8>,
     base: Option<i64>,
 ) -> Result<Ref, Error> {
-    limits::check_file(bytes.len() as u64)?;
-    limits::check_revision(bytes.len() as u64)?;
-    let sha = hex(&Sha256::digest(&bytes));
+    append_revision(conn, ctx, id, base, |_, _| Ok(bytes))
+}
+
+/// Replace one Section of the latest markdown Revision. The splice runs
+/// inside the same write transaction as the insert, so it always applies to
+/// the Revision it becomes the successor of.
+pub fn section_edit(
+    conn: &mut Connection,
+    ctx: &Context,
+    id: &str,
+    query: &str,
+    replacement: &[u8],
+    base: Option<i64>,
+) -> Result<Ref, Error> {
+    let replacement = std::str::from_utf8(replacement)
+        .map_err(|_| Error::Rejected("section replacement is not valid UTF-8".into()))?;
+    append_revision(conn, ctx, id, base, |kind, latest| {
+        let text = utf8_markdown(kind, latest)?;
+        Ok(sections::splice(text, query, replacement)?.into_bytes())
+    })
+}
+
+fn utf8_markdown<'a>(kind: &str, bytes: &'a [u8]) -> Result<&'a str, Error> {
+    if kind != Kind::Markdown.as_str() {
+        return Err(Error::Rejected(format!(
+            "sections are for markdown Artifacts, not {kind}"
+        )));
+    }
+    std::str::from_utf8(bytes)
+        .map_err(|_| Error::Rejected("markdown Artifact is not valid UTF-8".into()))
+}
+
+/// Text of a markdown Artifact's Revision (latest by default); rejects other
+/// Kinds and non-UTF-8 content.
+pub fn markdown_text(conn: &Connection, id: &str, revision: Option<i64>) -> Result<String, Error> {
+    let kind: String = conn
+        .query_row("SELECT kind FROM artifacts WHERE id = ?1", [id], |r| {
+            r.get(0)
+        })
+        .optional()
+        .map_err(db_err)?
+        .ok_or_else(|| Error::NotFound(format!("no artifact {id}")))?;
+    let bytes = get(conn, id, revision)?;
+    Ok(utf8_markdown(&kind, &bytes)?.to_string())
+}
+
+/// Shared insert path. `produce` gets the Artifact's Kind and the latest
+/// Revision's bytes and returns the new bytes.
+fn append_revision(
+    conn: &mut Connection,
+    ctx: &Context,
+    id: &str,
+    base: Option<i64>,
+    produce: impl FnOnce(&str, &[u8]) -> Result<Vec<u8>, Error>,
+) -> Result<Ref, Error> {
     write_tx(conn, |tx| {
-        let exists = tx
-            .query_row("SELECT 1 FROM artifacts WHERE id = ?1", [id], |_| Ok(()))
+        let kind: String = tx
+            .query_row("SELECT kind FROM artifacts WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })
             .optional()
             .map_err(db_err)?
-            .is_some();
-        if !exists {
-            return Err(Error::NotFound(format!("no artifact {id}")));
-        }
+            .ok_or_else(|| Error::NotFound(format!("no artifact {id}")))?;
         let (latest, author): (i64, String) = tx
             .query_row(
                 "SELECT number, author FROM revisions WHERE artifact_id = ?1
@@ -140,14 +192,19 @@ pub fn edit(
                 "stale base: you edited from @{b} but latest_revision is {latest}, written by {author}"
             )));
         }
-        let (path, media_type): (String, String) = tx
+        let (path, media_type, latest_bytes): (String, String, Vec<u8>) = tx
             .query_row(
-                "SELECT path, media_type FROM revision_files
-                 WHERE artifact_id = ?1 AND revision = ?2",
+                "SELECT f.path, f.media_type, b.bytes FROM revision_files f
+                 JOIN blobs b ON b.sha256 = f.sha256
+                 WHERE f.artifact_id = ?1 AND f.revision = ?2",
                 params![id, latest],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .map_err(db_err)?;
+        let bytes = produce(&kind, &latest_bytes)?;
+        limits::check_file(bytes.len() as u64)?;
+        limits::check_revision(bytes.len() as u64)?;
+        let sha = hex(&Sha256::digest(&bytes));
         let n = latest + 1;
         tx.execute(
             "INSERT INTO revisions (artifact_id, number, author, role, session, created_at)
