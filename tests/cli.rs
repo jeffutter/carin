@@ -441,6 +441,66 @@ mod roundtrip {
     }
 
     #[test]
+    fn format_flag_rejected_for_non_diagram_kinds() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("notes.md"), "# hi\n").unwrap();
+        std::fs::write(dir.path().join("logo.png"), b"x").unwrap();
+        let db = dir.path().join("c.db");
+        for args in [
+            vec!["submit", "notes.md", "--format", "mermaid"],
+            vec!["submit", "logo.png", "--format", "svg"],
+            vec![
+                "submit", "notes.md", "--kind", "markdown", "--format", "svg",
+            ],
+        ] {
+            let o = base(&db)
+                .current_dir(dir.path())
+                .args(&args)
+                .output()
+                .unwrap();
+            assert_eq!(o.status.code(), Some(4), "{args:?}");
+            assert!(String::from_utf8_lossy(&o.stderr).contains("--format applies only"));
+        }
+        let o = base(&db)
+            .current_dir(dir.path())
+            .args(["list"])
+            .output()
+            .unwrap();
+        assert_eq!(
+            json(&o.stdout)["artifacts"].as_array().map(|a| a.len()),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn format_flag_still_submits_diagrams() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("x.svg"),
+            "<svg xmlns=\"http://www.w3.org/2000/svg\"/>",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("x.mmd"), "graph TD; A-->B").unwrap();
+        let db = dir.path().join("c.db");
+        for args in [
+            ["submit", "x.svg", "--format", "svg"],
+            ["submit", "x.mmd", "--format", "mermaid"],
+        ] {
+            let o = base(&db)
+                .current_dir(dir.path())
+                .args(args)
+                .output()
+                .unwrap();
+            assert_eq!(
+                o.status.code(),
+                Some(0),
+                "{args:?} {}",
+                String::from_utf8_lossy(&o.stderr)
+            );
+        }
+    }
+
+    #[test]
     fn submit_dot_names_artifact_after_directory() {
         let dir = tempfile::tempdir().unwrap();
         let site = dir.path().join("mysite");

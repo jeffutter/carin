@@ -98,10 +98,16 @@ pub fn run(command: Command, ctx: &Context) -> Result<u8, Error> {
             // A directory can only be an html Bundle.
             let kind = match (kind, format, is_dir) {
                 (None, _, true) => kind::Kind::Html,
-                // --format only makes sense for a diagram.
-                (None, Some(_), false) => kind::Kind::Diagram,
+                // `x.svg --format svg` is ambiguous to infer(); --format
+                // resolves it to a diagram. Any other inferable extension wins.
+                (None, Some(_), false) => kind::infer(&path, None).unwrap_or(kind::Kind::Diagram),
                 _ => kind::infer(&path, kind)?,
             };
+            if format.is_some() && kind != kind::Kind::Diagram {
+                return Err(Error::Rejected(format!(
+                    "--format applies only to diagram Artifacts; {path} is a {kind:?} Artifact"
+                )));
+            }
             let format = match (kind, format) {
                 (kind::Kind::Diagram, None) => {
                     Some(diagram::Format::infer(&path).ok_or_else(|| {
