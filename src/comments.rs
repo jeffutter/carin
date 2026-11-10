@@ -329,9 +329,10 @@ pub fn set_status(
 }
 
 /// Threads of the Artifacts in scope. With an explicit Artifact the Session
-/// scope is ignored; otherwise a Session limits to Artifacts whose latest
-/// Revision was made in it (the `list --session` rule), and with no Session
-/// every Artifact is in scope (project scoping arrives with TASK-8).
+/// scope is ignored; otherwise an explicit `--session` limits to Artifacts any
+/// Revision of which was made in it (so a Session keeps its Threads after
+/// another Session edits), and with no explicit Session (the env fallback never
+/// filters) every Artifact is in scope (project scoping arrives with TASK-8).
 pub fn list(conn: &Connection, ctx: &Context, q: &ListQuery) -> Result<CommentList, Error> {
     // One snapshot so highest_comment_id covers everything the list shows.
     let tx = conn.unchecked_transaction().map_err(db_err)?;
@@ -342,14 +343,13 @@ pub fn list(conn: &Connection, ctx: &Context, q: &ListQuery) -> Result<CommentLi
     let session = if q.artifact.is_some() {
         None
     } else {
-        ctx.session.clone()
+        ctx.session_explicit.clone()
     };
     let threads = load_threads(
         &tx,
         "AND (?1 IS NULL OR c.artifact_id = ?1)
          AND (?2 IS NULL OR EXISTS (SELECT 1 FROM revisions r
               WHERE r.artifact_id = c.artifact_id
-                AND r.number = (SELECT MAX(number) FROM revisions WHERE artifact_id = c.artifact_id)
                 AND r.session = ?2))
          AND (?3 = 1 OR c.status = 'open')
          AND (?4 IS NULL OR c.id > ?4

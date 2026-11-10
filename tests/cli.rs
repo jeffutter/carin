@@ -1235,6 +1235,32 @@ mod comments {
                 .len(),
             1
         );
+        // another Session editing does not hide the Thread from s9
+        base(&db)
+            .args(["--session", "s8", "edit", &id])
+            .arg(&f)
+            .output()
+            .unwrap();
+        assert_eq!(
+            ok(&db, &["--session", "s9", "comment", "list"])["threads"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        // the env fallback session does not filter
+        let o = base(&db)
+            .env("CLAUDE_CODE_SESSION_ID", "zzz")
+            .args(["comment", "list"])
+            .output()
+            .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&o.stdout).unwrap()["threads"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
         // --text renders
         let o = run(&db, &["comment", "list", "--text"]);
         assert!(String::from_utf8_lossy(&o.stdout).contains("highest_comment_id"));
