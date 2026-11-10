@@ -103,6 +103,81 @@ pub fn submit(conn: &mut Connection, ctx: &Context, input: SubmitInput) -> Resul
     })
 }
 
+/// Append a new full-snapshot Revision. The latest number and the existence
+/// check are read inside the write transaction, so concurrent writers get
+/// distinct, consecutive numbers.
+pub fn edit(
+    conn: &mut Connection,
+    ctx: &Context,
+    id: &str,
+    bytes: Vec<u8>,
+    base: Option<i64>,
+) -> Result<Ref, Error> {
+    limits::check_file(bytes.len() as u64)?;
+    limits::check_revision(bytes.len() as u64)?;
+    let sha = hex(&Sha256::digest(&bytes));
+    write_tx(conn, |tx| {
+        let exists = tx
+            .query_row("SELECT 1 FROM artifacts WHERE id = ?1", [id], |_| Ok(()))
+            .optional()
+            .map_err(db_err)?
+            .is_some();
+        if !exists {
+            return Err(Error::NotFound(format!("no artifact {id}")));
+        }
+        let (latest, author): (i64, String) = tx
+            .query_row(
+                "SELECT number, author FROM revisions WHERE artifact_id = ?1
+                 ORDER BY number DESC LIMIT 1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .map_err(db_err)?;
+        if let Some(b) = base
+            && b != latest
+        {
+            return Err(Error::Conflict(format!(
+                "stale base: you edited from @{b} but latest_revision is {latest}, written by {author}"
+            )));
+        }
+        let (path, media_type): (String, String) = tx
+            .query_row(
+                "SELECT path, media_type FROM revision_files
+                 WHERE artifact_id = ?1 AND revision = ?2",
+                params![id, latest],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .map_err(db_err)?;
+        let n = latest + 1;
+        tx.execute(
+            "INSERT INTO revisions (artifact_id, number, author, role, session, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+            params![id, n, ctx.author, ctx.role.as_str(), ctx.session],
+        )
+        .map_err(db_err)?;
+        tx.execute(
+            "INSERT OR IGNORE INTO blobs (sha256, bytes) VALUES (?1, ?2)",
+            params![sha, bytes],
+        )
+        .map_err(db_err)?;
+        tx.execute(
+            "INSERT INTO revision_files (artifact_id, revision, path, media_type, size, sha256)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![id, n, path, media_type, bytes.len() as i64, sha],
+        )
+        .map_err(db_err)?;
+        tx.execute(
+            "UPDATE artifacts SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?1",
+            [id],
+        )
+        .map_err(db_err)?;
+        Ok(Ref {
+            id: id.to_string(),
+            revision: n,
+        })
+    })
+}
+
 /// Content of the single file of an Artifact's Revision (latest by default).
 pub fn get(conn: &Connection, id: &str, revision: Option<i64>) -> Result<Vec<u8>, Error> {
     let exists: bool = conn

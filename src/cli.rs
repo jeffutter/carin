@@ -72,6 +72,16 @@ pub enum Command {
         #[arg(long)]
         format: Option<String>,
     },
+    /// Replace an Artifact's content with a new Revision and print its ref
+    Edit {
+        /// Artifact id (no `@revision`)
+        id: String,
+        /// File with the new content, or `-` for stdin
+        path: String,
+        /// Refuse unless this is still the latest Revision (exit 6)
+        #[arg(long)]
+        base: Option<i64>,
+    },
     /// Print an Artifact's content: `abc123` or `abc123@2`
     Get { target: String },
 }

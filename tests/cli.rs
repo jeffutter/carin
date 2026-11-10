@@ -239,4 +239,173 @@ mod roundtrip {
             Some(4)
         );
     }
+
+    fn submit_md(db: &std::path::Path, dir: &std::path::Path, text: &str) -> String {
+        let md = dir.join("a.md");
+        std::fs::write(&md, text).unwrap();
+        let o = base(db).arg("submit").arg(&md).output().unwrap();
+        json(&o.stdout)["id"].as_str().unwrap().to_string()
+    }
+
+    fn edit_with(
+        db: &std::path::Path,
+        dir: &std::path::Path,
+        id: &str,
+        text: &str,
+        extra: &[&str],
+    ) -> std::process::Output {
+        let f = dir.join("edit-input.md");
+        std::fs::write(&f, text).unwrap();
+        base(db)
+            .args(extra)
+            .args(["edit", id])
+            .arg(&f)
+            .output()
+            .unwrap()
+    }
+
+    #[test]
+    fn edit_appends_revision_and_keeps_earlier() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("c.db");
+        let id = submit_md(&db, dir.path(), "one");
+        let o = edit_with(&db, dir.path(), &id, "two", &[]);
+        assert_eq!(
+            o.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        assert_eq!(json(&o.stdout)["ref"], format!("{id}@2"));
+        let get = |t: &str| base(&db).args(["get", t]).output().unwrap();
+        assert_eq!(get(&format!("{id}@1")).stdout, b"one");
+        assert_eq!(get(&format!("{id}@2")).stdout, b"two");
+        assert_eq!(get(&id).stdout, b"two");
+        assert_eq!(get(&format!("{id}@3")).status.code(), Some(3));
+    }
+
+    #[test]
+    fn stale_base_exits_six_naming_latest_and_author() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("c.db");
+        let id = submit_md(&db, dir.path(), "one");
+        let o = edit_with(&db, dir.path(), &id, "two", &["--author", "alice"]);
+        assert_eq!(o.status.code(), Some(0));
+        let o = {
+            let f = dir.path().join("edit-input.md");
+            std::fs::write(&f, "three").unwrap();
+            base(&db)
+                .args(["edit", &id, "--base", "1"])
+                .arg(&f)
+                .output()
+                .unwrap()
+        };
+        assert_eq!(o.status.code(), Some(6));
+        let v = json(&o.stderr);
+        assert_eq!(v["code"], "conflict");
+        let m = v["message"].as_str().unwrap();
+        assert!(
+            m.contains("latest_revision is 2") && m.contains("alice"),
+            "{m}"
+        );
+        let f = dir.path().join("edit-input.md");
+        let o = base(&db)
+            .args(["edit", &id, "--base", "2"])
+            .arg(&f)
+            .output()
+            .unwrap();
+        assert_eq!(o.status.code(), Some(0));
+    }
+
+    #[test]
+    fn unchanged_edit_shares_blob() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("c.db");
+        let id = submit_md(&db, dir.path(), "same");
+        assert_eq!(
+            edit_with(&db, dir.path(), &id, "same", &[]).status.code(),
+            Some(0)
+        );
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM blobs", [], |r| r.get(0))
+            .unwrap();
+        let r: i64 = conn
+            .query_row("SELECT COUNT(*) FROM revisions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!((n, r), (1, 2));
+    }
+
+    #[test]
+    fn concurrent_edits_get_consecutive_numbers() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("c.db");
+        let id = submit_md(&db, dir.path(), "zero");
+        let n = 8;
+        let children: Vec<_> = (0..n)
+            .map(|i| {
+                let f = dir.path().join(format!("c{i}.md"));
+                std::fs::write(&f, format!("content {i}")).unwrap();
+                base(&db)
+                    .args(["edit", &id])
+                    .arg(&f)
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .unwrap()
+            })
+            .collect();
+        let mut revs: Vec<i64> = children
+            .into_iter()
+            .map(|c| {
+                let o = c.wait_with_output().unwrap();
+                assert_eq!(
+                    o.status.code(),
+                    Some(0),
+                    "{}",
+                    String::from_utf8_lossy(&o.stderr)
+                );
+                json(&o.stdout)["revision"].as_i64().unwrap()
+            })
+            .collect();
+        revs.sort();
+        assert_eq!(revs, (2..=n as i64 + 1).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn edit_unknown_or_deleted_artifact_exits_three() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("c.db");
+        let id = submit_md(&db, dir.path(), "one");
+        assert_eq!(
+            edit_with(&db, dir.path(), "nope", "x", &[]).status.code(),
+            Some(3)
+        );
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+        conn.execute("DELETE FROM artifacts WHERE id = ?1", [&id])
+            .unwrap();
+        drop(conn);
+        assert_eq!(
+            edit_with(&db, dir.path(), &id, "x", &[]).status.code(),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn edit_rejects_revision_suffix_and_oversize() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("c.db");
+        let id = submit_md(&db, dir.path(), "one");
+        assert_eq!(
+            edit_with(&db, dir.path(), &format!("{id}@1"), "x", &[])
+                .status
+                .code(),
+            Some(2)
+        );
+        let big = "a".repeat(10 * 1024 * 1024 + 1);
+        let o = edit_with(&db, dir.path(), &id, &big, &[]);
+        assert_eq!(o.status.code(), Some(4));
+        assert!(String::from_utf8_lossy(&o.stderr).contains("10 MiB"));
+    }
 }

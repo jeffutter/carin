@@ -60,6 +60,18 @@ pub fn run(command: Command, ctx: &Context) -> Result<(), Error> {
             println!("{}", serde_json::to_string(&r).expect("ref serializes"));
             Ok(())
         }
+        Command::Edit { id, path, base } => {
+            if id.contains('@') {
+                return Err(Error::Usage(
+                    "edit takes a bare artifact id, not id@revision".into(),
+                ));
+            }
+            let bytes = read_input(&path)?;
+            let mut conn = db::open(&ctx.db_path)?;
+            let r = artifact::edit(&mut conn, ctx, &id, bytes, base)?;
+            println!("{}", serde_json::to_string(&r).expect("ref serializes"));
+            Ok(())
+        }
         Command::Get { target } => {
             let (id, rev) = artifact::parse_target(&target)?;
             let conn = db::open(&ctx.db_path)?;

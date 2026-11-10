@@ -15,6 +15,15 @@ pub fn check_file(size: u64) -> Result<(), Error> {
     Ok(())
 }
 
+pub fn check_revision(total: u64) -> Result<(), Error> {
+    if total > MAX_REVISION_BYTES {
+        return Err(Error::Rejected(format!(
+            "revision is {total} bytes, over the per-Revision limit of 25 MiB ({MAX_REVISION_BYTES} bytes)"
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -25,5 +34,13 @@ mod tests {
         let e = check_file(MAX_FILE_BYTES + 1).unwrap_err();
         assert_eq!(e.exit_code(), 4);
         assert!(e.to_string().contains("10 MiB"));
+    }
+
+    #[test]
+    fn names_the_revision_limit() {
+        assert!(check_revision(MAX_REVISION_BYTES).is_ok());
+        let e = check_revision(MAX_REVISION_BYTES + 1).unwrap_err();
+        assert_eq!(e.exit_code(), 4);
+        assert!(e.to_string().contains("25 MiB"));
     }
 }
