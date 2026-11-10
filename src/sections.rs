@@ -37,12 +37,63 @@ impl Heading {
     /// The path as printed by `outline`: `A > B`, with `#n` on the last
     /// segment when the full path repeats, so it can be used as an address.
     pub fn display_path(&self) -> String {
-        let mut p = self.path.join(" > ");
+        let mut p = self
+            .path
+            .iter()
+            .map(|t| escape_segment(t))
+            .collect::<Vec<_>>()
+            .join(" > ");
         if self.repeated {
             p.push_str(&format!("#{}", self.occurrence));
         }
         p
     }
+}
+
+/// Escape one heading text for use as a path segment: `\\` and `>` always,
+/// and `#` when what follows is all digits (otherwise it would read as an
+/// occurrence suffix). A plain `C#` stays as is.
+fn escape_segment(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    for (i, &c) in chars.iter().enumerate() {
+        let rest = &chars[i + 1..];
+        let digits_follow = !rest.is_empty() && rest.iter().all(char::is_ascii_digit);
+        if c == '\\' || c == '>' || (c == '#' && digits_follow) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Split a query into segments of `(char, escaped)`. A backslash makes the
+/// next char literal (a trailing lone backslash is literal); an unescaped `>`
+/// ends a segment. Unescaped edge whitespace is trimmed.
+fn split_query(query: &str) -> Vec<Vec<(char, bool)>> {
+    let mut segs: Vec<Vec<(char, bool)>> = vec![Vec::new()];
+    let mut it = query.chars().peekable();
+    while let Some(c) = it.next() {
+        if c == '\\' {
+            let lit = it.next().unwrap_or('\\');
+            segs.last_mut().unwrap().push((lit, true));
+        } else if c == '>' {
+            segs.push(Vec::new());
+        } else {
+            segs.last_mut().unwrap().push((c, false));
+        }
+    }
+    for seg in &mut segs {
+        while seg.last().is_some_and(|&(c, e)| !e && c.is_whitespace()) {
+            seg.pop();
+        }
+        let lead = seg
+            .iter()
+            .take_while(|&&(c, e)| !e && c.is_whitespace())
+            .count();
+        seg.drain(..lead);
+    }
+    segs
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -160,16 +211,31 @@ pub fn outline(src: &str) -> Vec<OutlineEntry> {
 /// n-th candidate in document order. More than one candidate without `#n` is
 /// an error, even when one of them equals the query exactly.
 pub fn resolve<'a>(headings: &'a [Heading], query: &str) -> Result<&'a Heading, Error> {
-    let mut segs: Vec<String> = query.split('>').map(|s| s.trim().to_string()).collect();
+    let mut raw = split_query(query);
     let mut nth: Option<usize> = None;
-    if let Some(last) = segs.last_mut()
-        && let Some((name, n)) = last.rsplit_once('#')
-        && let Ok(n) = n.parse::<usize>()
+    if let Some(last) = raw.last_mut()
+        && let Some(pos) = last.iter().rposition(|&(c, e)| c == '#' && !e)
+        && !last[pos + 1..].is_empty()
+        && last[pos + 1..]
+            .iter()
+            .all(|&(c, e)| !e && c.is_ascii_digit())
+        && let Ok(n) = last[pos + 1..]
+            .iter()
+            .map(|&(c, _)| c)
+            .collect::<String>()
+            .parse::<usize>()
         && n >= 1
     {
         nth = Some(n);
-        *last = name.trim_end().to_string();
+        last.truncate(pos);
+        while last.last().is_some_and(|&(c, e)| !e && c.is_whitespace()) {
+            last.pop();
+        }
     }
+    let segs: Vec<String> = raw
+        .iter()
+        .map(|s| s.iter().map(|&(c, _)| c).collect())
+        .collect();
     if segs.iter().any(|s| s.is_empty()) {
         return Err(Error::Rejected(format!(
             "empty segment in section path {query:?}"
@@ -181,7 +247,11 @@ pub fn resolve<'a>(headings: &'a [Heading], query: &str) -> Result<&'a Heading, 
         .filter(|h| h.path.ends_with(&segs))
         .collect();
 
-    let base = segs.join(" > ");
+    let base = segs
+        .iter()
+        .map(|t| escape_segment(t))
+        .collect::<Vec<_>>()
+        .join(" > ");
     match (candidates.as_slice(), nth) {
         ([], _) => {
             let avail: Vec<String> = headings.iter().map(Heading::display_path).collect();
@@ -402,5 +472,41 @@ mod tests {
     #[test]
     fn no_headings() {
         assert!(outline("just text\n").is_empty());
+    }
+
+    #[test]
+    fn printed_paths_round_trip() {
+        let doc = "# Issue #12\n\na\n\n# A > B\n\nb\n\n# back\\slash\n\nc\n\n# C#\n\nd\n\n\
+                   # Issue #12\n\ne\n\n# P > Q\n\n## Kid\n\nf\n\n# Intro <!-- x -->\n\ng\n\n\
+                   # Intro\n\nh\n\n# P\n\n## Q\n\n### Kid\n\ni\n";
+        let hs = parse(doc);
+        for h in &hs {
+            let p = h.display_path();
+            let got = resolve(&hs, &p).unwrap_or_else(|e| panic!("{p:?}: {e:?}"));
+            assert_eq!(got.start, h.start, "path {p:?}");
+        }
+    }
+
+    #[test]
+    fn escaped_hash_digits_is_a_name() {
+        let doc = "# Issue #12\n\nbody\n";
+        assert_eq!(paths(doc), vec!["Issue \\#12"]);
+        assert_eq!(extract(doc, "Issue \\#12").unwrap(), doc);
+        // Unescaped, it means name "Issue" occurrence 12.
+        assert!(extract(doc, "Issue #12").is_err());
+    }
+
+    #[test]
+    fn gt_in_heading_is_not_nesting() {
+        let doc = "# A > B\n\nx\n\n# A\n\n## B\n\ny\n";
+        assert_eq!(extract(doc, "A \\> B").unwrap(), "# A > B\n\nx\n\n");
+        assert_eq!(extract(doc, "A > B").unwrap(), "## B\n\ny\n");
+    }
+
+    #[test]
+    fn splice_via_escaped_path() {
+        let doc = "# A > B\n\nx\n\n# C\n\nz\n";
+        let out = splice(doc, "A \\> B", "# A > B\n\nnew\n").unwrap();
+        assert_eq!(out, "# A > B\n\nnew\n# C\n\nz\n");
     }
 }
