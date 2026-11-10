@@ -3,18 +3,19 @@
 //! Handlers call core in-process. SQLite connections are not `Sync`, so each
 //! request opens its own inside `spawn_blocking`. Everything an Agent supplied
 //! (names, authors, Section titles, markdown) is untrusted: text goes through
-//! maud's escaping, and markdown is rendered by [`render_markdown`], which
+//! maud's escaping, and markdown is rendered by [`render_blocks`], which
 //! drops raw HTML and unsafe link schemes. The page CSP ([`csp`]) is the
 //! second line of defence; it forbids inline script and style.
 
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
+use axum::Form;
 use axum::Router;
 use axum::extract::{Path as UrlPath, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Redirect, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use rusqlite::{Connection, OptionalExtension};
@@ -32,6 +33,7 @@ use crate::sections;
 
 const HTMX_JS: &str = include_str!(env!("HTMX_JS"));
 const APP_CSS: &str = include_str!("ui/style.css");
+const APP_JS: &str = include_str!("ui/app.js");
 /// More rows than any one reviewer scrolls; the list has no paging yet.
 const LIST_LIMIT: i64 = 10_000;
 
@@ -43,6 +45,7 @@ fn short_hash(s: &str) -> String {
 
 static HTMX_HASH: LazyLock<String> = LazyLock::new(|| short_hash(HTMX_JS));
 static CSS_HASH: LazyLock<String> = LazyLock::new(|| short_hash(APP_CSS));
+static JS_HASH: LazyLock<String> = LazyLock::new(|| short_hash(APP_JS));
 
 /// The UI's own CSP. Script and style only from this origin (no inline), no
 /// framing except by itself, Artifact images and frames only from the content
@@ -67,8 +70,14 @@ pub(crate) fn router(state: UiState) -> Router {
     Router::new()
         .route("/", get(list_page))
         .route("/a/{idrev}", get(artifact_page))
+        .route("/a/{idrev}/live", get(live_fragment))
+        .route("/a/{idrev}/compose", get(compose))
+        .route("/a/{idrev}/threads", post(new_thread))
+        .route("/a/{idrev}/threads/{thread}/reply", post(reply))
+        .route("/a/{idrev}/threads/{thread}/status", post(set_status))
         .route("/static/{hash}/htmx.js", get(htmx_js))
         .route("/static/{hash}/app.css", get(app_css))
+        .route("/static/{hash}/app.js", get(app_js))
         .with_state(state)
 }
 
@@ -85,18 +94,25 @@ pub(crate) fn not_found() -> Response {
     plain(StatusCode::NOT_FOUND, "not found")
 }
 
-/// Run `f` against a fresh connection off the async threads. `None` is a 404;
-/// an error is a fixed 500 because its text could echo stored content.
-async fn blocking<T, F>(db_path: &Path, f: F) -> Result<T, (StatusCode, &'static str)>
+/// An HTTP status with a fixed body.
+type Failure = (StatusCode, &'static str);
+
+/// Run `f` against a fresh connection off the async threads. `None` is a 404.
+/// Error text could echo stored content, so every error is a fixed string:
+/// bad input is a 400, a missing target a 404, anything else a 500.
+async fn blocking<T, F>(db_path: &Path, f: F) -> Result<T, Failure>
 where
     T: Send + 'static,
-    F: FnOnce(&Connection) -> Result<Option<T>, Error> + Send + 'static,
+    F: FnOnce(&mut Connection) -> Result<Option<T>, Error> + Send + 'static,
 {
     let db_path = db_path.to_path_buf();
-    let r = tokio::task::spawn_blocking(move || f(&db::open(&db_path)?)).await;
+    let r = tokio::task::spawn_blocking(move || f(&mut db::open(&db_path)?)).await;
     match r {
         Ok(Ok(Some(v))) => Ok(v),
-        Ok(Ok(None)) => Err((StatusCode::NOT_FOUND, "not found")),
+        Ok(Ok(None)) | Ok(Err(Error::NotFound(_))) => Err((StatusCode::NOT_FOUND, "not found")),
+        Ok(Err(Error::Usage(_) | Error::Rejected(_))) => {
+            Err((StatusCode::BAD_REQUEST, "bad request"))
+        }
         _ => Err((StatusCode::INTERNAL_SERVER_ERROR, "server error")),
     }
 }
@@ -127,6 +143,10 @@ async fn app_css(UrlPath(hash): UrlPath<String>) -> Response {
     asset(&hash, &CSS_HASH, "text/css; charset=utf-8", APP_CSS)
 }
 
+async fn app_js(UrlPath(hash): UrlPath<String>) -> Response {
+    asset(&hash, &JS_HASH, "text/javascript; charset=utf-8", APP_JS)
+}
+
 fn layout(s: &UiState, title: &str, body: Markup) -> Markup {
     html! {
         (DOCTYPE)
@@ -140,6 +160,7 @@ fn layout(s: &UiState, title: &str, body: Markup) -> Markup {
                 title { (title) " - cairn" }
                 link rel="stylesheet" href={ "/static/" (*CSS_HASH) "/app.css" };
                 script src={ "/static/" (*HTMX_HASH) "/htmx.js" } defer {}
+                script src={ "/static/" (*JS_HASH) "/app.js" } defer {}
             }
             body {
                 header.top {
@@ -219,7 +240,9 @@ fn short_time(ts: &str) -> String {
 
 fn table(rows: &[ListRow]) -> Markup {
     html! {
-        div #artifacts {
+        // Polled so Open Thread counts follow resolves and replies made elsewhere.
+        div #artifacts data-poll hx-get="/" hx-trigger="every 2s" hx-swap="outerHTML"
+            hx-include=".filters" {
             @if rows.is_empty() {
                 p.mut { "No Artifacts." }
             } @else {
@@ -327,7 +350,7 @@ struct OutlineItem {
 
 enum Body {
     Markdown {
-        html: String,
+        doc: Markup,
         outline: Vec<OutlineItem>,
     },
     Other,
@@ -343,13 +366,17 @@ struct Page {
     revisions: Vec<RevInfo>,
     viewing: i64,
     latest: i64,
+    /// [`comments::change_marker`] read before the Threads, so the page is at
+    /// least as new as the marker it carries.
+    marker: String,
     body: Body,
 }
 
-fn reviewer_ctx(db_path: &Path) -> Context {
+/// The identity UI posts carry: the `--reviewer-name`, role reviewer, no Session.
+fn reviewer_ctx(db_path: &Path, reviewer: &str) -> Context {
     Context {
         role: Role::Reviewer,
-        author: "reviewer".into(),
+        author: reviewer.to_string(),
         session: None,
         session_explicit: None,
         db_path: db_path.to_path_buf(),
@@ -392,8 +419,25 @@ fn thread_counts(text: &str, viewing: i64, threads: &[comments::Thread]) -> Vec<
     counts
 }
 
+/// The Revision a request views: the named one if it exists, else the latest.
+/// `None` when the Artifact or the named Revision does not exist.
+fn viewing_rev(conn: &Connection, id: &str, rev: Option<i64>) -> Result<Option<i64>, Error> {
+    let latest: Option<i64> = conn
+        .query_row(
+            "SELECT MAX(number) FROM revisions WHERE artifact_id = ?1",
+            [id],
+            |r| r.get(0),
+        )
+        .map_err(db_err)?;
+    Ok(match (latest, rev) {
+        (None, _) => None,
+        (Some(l), None) => Some(l),
+        (Some(l), Some(n)) => (1..=l).contains(&n).then_some(n),
+    })
+}
+
 fn load_page(
-    db_path: &Path,
+    ctx: &Context,
     conn: &Connection,
     id: &str,
     rev: Option<i64>,
@@ -441,19 +485,26 @@ fn load_page(
     if !revisions.iter().any(|r| r.number == viewing) {
         return Ok(None);
     }
+    let marker = comments::change_marker(conn, id)?;
     let body = if kind == Kind::Markdown {
         let text = artifact::markdown_text(conn, id, Some(viewing))?;
         let list = comments::list(
             conn,
-            &reviewer_ctx(db_path),
+            ctx,
             &comments::ListQuery {
                 artifact: Some(id.to_string()),
-                all: false,
+                all: true,
                 since: None,
                 scope: ScopeFilter::unscoped(),
             },
         )?;
-        let counts = thread_counts(&text, viewing, &list.threads);
+        // Open Threads from any Revision; a resolved Thread only on its own.
+        let threads: Vec<comments::Thread> = list
+            .threads
+            .into_iter()
+            .filter(|t| t.status == "open" || t.revision == viewing)
+            .collect();
+        let counts = thread_counts(&text, viewing, &threads);
         let outline = sections::parse(&text)
             .into_iter()
             .zip(counts)
@@ -464,7 +515,7 @@ fn load_page(
             })
             .collect();
         Body::Markdown {
-            html: render_markdown(&text),
+            doc: doc_markup(&text, &format!("/a/{id}@{viewing}"), viewing, &threads),
             outline,
         }
     } else {
@@ -480,6 +531,7 @@ fn load_page(
         revisions,
         viewing,
         latest,
+        marker,
         body,
     }))
 }
@@ -506,12 +558,256 @@ async fn artifact_page(
             _ => not_found(),
         };
     }
-    let db_path = s.db_path.clone();
-    let page = match blocking(&s.db_path, move |c| load_page(&db_path, c, &id, rev)).await {
+    let ctx = reviewer_ctx(&s.db_path, &s.reviewer);
+    let page = match blocking(&s.db_path, move |c| load_page(&ctx, c, &id, rev)).await {
         Ok(p) => p,
         Err(r) => return r.into_response(),
     };
     html_response(layout(&s, &page.name, page_markup(&page)))
+}
+
+// --- live region and Thread actions ---------------------------------------------
+
+/// Parse the `{id}@{rev}` URL segment of a fragment or action route.
+fn target(idrev: &str) -> Result<(String, Option<i64>), Failure> {
+    artifact::parse_target(idrev).map_err(|_| (StatusCode::NOT_FOUND, "not found"))
+}
+
+#[derive(Deserialize, Default)]
+struct LiveParams {
+    m: Option<String>,
+}
+
+/// The poll target. When the client's marker is current there is nothing to
+/// redraw: 204, which htmx does not swap.
+async fn live_fragment(
+    State(s): State<UiState>,
+    UrlPath(idrev): UrlPath<String>,
+    Query(q): Query<LiveParams>,
+) -> Response {
+    let (id, rev) = match target(&idrev) {
+        Ok(t) => t,
+        Err(e) => return e.into_response(),
+    };
+    let ctx = reviewer_ctx(&s.db_path, &s.reviewer);
+    let r = blocking(&s.db_path, move |c| {
+        let Some(viewing) = viewing_rev(c, &id, rev)? else {
+            return Ok(None);
+        };
+        if q.m.as_deref() == Some(comments::change_marker(c, &id)?.as_str()) {
+            return Ok(Some(None));
+        }
+        Ok(load_page(&ctx, c, &id, Some(viewing))?.map(|p| Some(live_markup(&p))))
+    })
+    .await;
+    match r {
+        Ok(Some(m)) => html_response(m),
+        Ok(None) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+/// Writes need a header a cross-site form cannot send (htmx sets `HX-Request`),
+/// and an `Origin`, when the browser sends one, naming this host.
+fn check_post(headers: &HeaderMap) -> Result<(), Failure> {
+    let origin_ok = match headers.get(header::ORIGIN) {
+        None => true,
+        Some(o) => {
+            let host = headers.get(header::HOST).and_then(|h| h.to_str().ok());
+            let origin = o
+                .to_str()
+                .ok()
+                .and_then(|o| o.split_once("://"))
+                .map(|x| x.1);
+            matches!((origin, host), (Some(o), Some(h)) if o == h)
+        }
+    };
+    if origin_ok && headers.contains_key("hx-request") {
+        Ok(())
+    } else {
+        Err((StatusCode::FORBIDDEN, "forbidden"))
+    }
+}
+
+/// Run a write on the viewed Revision of an Artifact, then answer with the
+/// redrawn live region. `act` gets the connection, the Reviewer's context, the
+/// Artifact id and the viewed Revision.
+async fn mutate<F>(s: &UiState, headers: &HeaderMap, idrev: &str, act: F) -> Response
+where
+    F: FnOnce(&mut Connection, &Context, &str, i64) -> Result<(), Error> + Send + 'static,
+{
+    if let Err(e) = check_post(headers) {
+        return e.into_response();
+    }
+    let (id, rev) = match target(idrev) {
+        Ok(t) => t,
+        Err(e) => return e.into_response(),
+    };
+    let ctx = reviewer_ctx(&s.db_path, &s.reviewer);
+    let r = blocking(&s.db_path, move |c| {
+        let Some(viewing) = viewing_rev(c, &id, rev)? else {
+            return Ok(None);
+        };
+        act(c, &ctx, &id, viewing)?;
+        Ok(load_page(&ctx, c, &id, Some(viewing))?.map(|p| live_markup(&p)))
+    })
+    .await;
+    match r {
+        Ok(m) => html_response(m),
+        Err(e) => e.into_response(),
+    }
+}
+
+#[derive(Deserialize, Default)]
+struct ComposeParams {
+    line: Option<i64>,
+    section: Option<String>,
+}
+
+/// The inline form that starts a Thread at a line or Section.
+async fn compose(UrlPath(idrev): UrlPath<String>, Query(q): Query<ComposeParams>) -> Response {
+    let (id, rev) = match target(&idrev) {
+        Ok(t) => t,
+        Err(e) => return e.into_response(),
+    };
+    if q.line.is_none() == q.section.is_none() {
+        return plain(StatusCode::BAD_REQUEST, "bad request");
+    }
+    let base = match rev {
+        Some(n) => format!("/a/{id}@{n}"),
+        None => format!("/a/{id}"),
+    };
+    html_response(html! {
+        form.compose hx-post={ (base) "/threads" } hx-target="#live" hx-swap="outerHTML" {
+            @if let Some(l) = q.line {
+                input type="hidden" name="line" value=(l);
+                div.mut.small { "Comment on line " (l) }
+            }
+            @if let Some(sec) = &q.section {
+                input type="hidden" name="section" value=(sec);
+                div.mut.small { "Comment on Section " (sec) }
+            }
+            textarea name="body" rows="3" required placeholder="Comment" autofocus {}
+            div.row {
+                button type="submit" { "Comment" }
+                button type="button" data-cancel { "Cancel" }
+            }
+        }
+    })
+}
+
+#[derive(Deserialize)]
+struct NewThread {
+    body: String,
+    line: Option<i64>,
+    section: Option<String>,
+}
+
+async fn new_thread(
+    State(s): State<UiState>,
+    UrlPath(idrev): UrlPath<String>,
+    headers: HeaderMap,
+    Form(f): Form<NewThread>,
+) -> Response {
+    mutate(&s, &headers, &idrev, move |c, ctx, id, viewing| {
+        let loc = comments::Locator {
+            lines: f.line.map(|l| (l, l)),
+            section: f.section,
+        };
+        comments::add(c, ctx, &format!("{id}@{viewing}"), &f.body, &loc, None).map(drop)
+    })
+    .await
+}
+
+#[derive(Deserialize)]
+struct ReplyForm {
+    body: String,
+}
+
+async fn reply(
+    State(s): State<UiState>,
+    UrlPath((idrev, thread)): UrlPath<(String, i64)>,
+    headers: HeaderMap,
+    Form(f): Form<ReplyForm>,
+) -> Response {
+    mutate(&s, &headers, &idrev, move |c, ctx, id, _| {
+        // A reply stays on its Thread's Revision, so name the Artifact only.
+        comments::add(
+            c,
+            ctx,
+            id,
+            &f.body,
+            &comments::Locator::default(),
+            Some(thread),
+        )
+        .map(drop)
+    })
+    .await
+}
+
+#[derive(Deserialize)]
+struct StatusForm {
+    status: String,
+}
+
+async fn set_status(
+    State(s): State<UiState>,
+    UrlPath((idrev, thread)): UrlPath<(String, i64)>,
+    headers: HeaderMap,
+    Form(f): Form<StatusForm>,
+) -> Response {
+    mutate(&s, &headers, &idrev, move |c, _, id, _| {
+        if !matches!(f.status.as_str(), "open" | "resolved") {
+            return Err(Error::Usage("bad status".into()));
+        }
+        // set_status takes any root id; make sure it is this Artifact's.
+        comments::check_addressable(c, id, &[thread])?;
+        comments::set_status(c, thread, &f.status).map(drop)
+    })
+    .await
+}
+
+// --- page markup ------------------------------------------------------------------
+
+/// The part of the Artifact page that refreshes: the banner, outline, text and
+/// Threads. Markdown pages poll with their change marker; a 204 means no change.
+fn live_markup(p: &Page) -> Markup {
+    let here = format!("/a/{}", p.id);
+    let polling = matches!(p.body, Body::Markdown { .. });
+    html! {
+        div #live data-poll[polling]
+            hx-get=[polling.then(|| format!("{here}@{}/live?m={}", p.viewing, p.marker))]
+            hx-trigger=[polling.then_some("every 2s")]
+            hx-swap=[polling.then_some("outerHTML")] {
+            @if p.viewing != p.latest {
+                div.banner {
+                    "Viewing r" (p.viewing) ", not the latest (r" (p.latest) "). "
+                    a.latest href={ (here) "@" (p.latest) } { "Go to latest" }
+                }
+            }
+            @match &p.body {
+                Body::Markdown { doc, outline } => {
+                    div.lay {
+                        nav.side aria-label="Outline" {
+                            @for (i, e) in outline.iter().enumerate() {
+                                a class={ "lvl" (e.level) } href={ "#s" (i + 1) } {
+                                    span { (e.text) }
+                                    @if e.open_threads > 0 { span.pill.open { (e.open_threads) } }
+                                }
+                            }
+                        }
+                        article.doc { (doc) }
+                    }
+                }
+                Body::Other => {
+                    div.placeholder {
+                        p { "This " (p.kind.as_str()) " Artifact is not shown in the UI yet." }
+                        p.mut.small { "Use `cairn get " (p.id) "@" (p.viewing) "` to read it." }
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn page_markup(p: &Page) -> Markup {
@@ -522,12 +818,6 @@ fn page_markup(p: &Page) -> Markup {
     let here = format!("/a/{}", p.id);
     html! {
         div.wrap #page {
-            @if p.viewing != p.latest {
-                div.banner {
-                    "Viewing r" (p.viewing) ", not the latest (r" (p.latest) "). "
-                    a.latest href={ (here) "@" (p.latest) } { "Go to latest" }
-                }
-            }
             div.titlebar {
                 h1 { (p.name) }
                 span.pill { (kind_label) }
@@ -551,25 +841,119 @@ fn page_markup(p: &Page) -> Markup {
                     button type="submit" { "Go" }
                 }
             }
-            @match &p.body {
-                Body::Markdown { html: body, outline } => {
-                    div.lay {
-                        nav.side aria-label="Outline" {
-                            @for (i, e) in outline.iter().enumerate() {
-                                a class={ "lvl" (e.level) } href={ "#s" (i + 1) } {
-                                    span { (e.text) }
-                                    @if e.open_threads > 0 { span.pill.open { (e.open_threads) } }
-                                }
-                            }
-                        }
-                        article.doc { (PreEscaped(body)) }
+            (live_markup(p))
+        }
+    }
+}
+
+// --- the document with its Threads --------------------------------------------------
+
+/// The text of one Revision as blocks (gutter, rendered markdown, Threads
+/// anchored to it, an empty slot for the compose form). A Thread goes under
+/// the heading of the Section it names, or under the block holding its first
+/// line when it was made on this Revision. Anything else, such as a line
+/// Thread from an earlier Revision whose lines may have moved, is listed first.
+fn doc_markup(text: &str, base: &str, viewing: i64, threads: &[comments::Thread]) -> Markup {
+    let blocks = render_blocks(text);
+    let paths: Vec<String> = sections::parse(text)
+        .iter()
+        .map(|h| h.display_path())
+        .collect();
+    let mut under: Vec<Vec<&comments::Thread>> = vec![Vec::new(); blocks.len()];
+    let mut floating: Vec<&comments::Thread> = Vec::new();
+    for t in threads {
+        let at = match (&t.locator.section_path, t.locator.line_start) {
+            (Some(p), _) => paths
+                .iter()
+                .position(|x| x == p)
+                .and_then(|h| blocks.iter().position(|b| b.heading == Some(h))),
+            (None, Some(l)) if t.revision == viewing => blocks
+                .iter()
+                .rposition(|b| b.first <= l)
+                .or((!blocks.is_empty()).then_some(0)),
+            _ => None,
+        };
+        match at {
+            Some(i) => under[i].push(t),
+            None => floating.push(t),
+        }
+    }
+    html! {
+        @if !floating.is_empty() {
+            section.floating {
+                h3 { "Threads without a place in this Revision" }
+                @for t in &floating { (thread_card(t, base, viewing)) }
+            }
+        }
+        @for (i, b) in blocks.iter().enumerate() {
+            div.blk {
+                div.gut {
+                    @for l in b.first..=b.last {
+                        button.ln type="button" title="Comment on this line"
+                            hx-get={ (base) "/compose?line=" (l) }
+                            hx-target={ "#slot-" (i) } hx-swap="innerHTML" { (l) }
                     }
                 }
-                Body::Other => {
-                    div.placeholder {
-                        p { "This " (p.kind.as_str()) " Artifact is not shown in the UI yet." }
-                        p.mut.small { "Use `cairn get " (p.id) "@" (p.viewing) "` to read it." }
+                div.bc {
+                    @if let Some(h) = b.heading {
+                        button.addsec type="button" hx-get={ (base) "/compose" }
+                            hx-vals=(serde_json::json!({ "section": paths[h] }).to_string())
+                            hx-target={ "#slot-" (i) } hx-swap="innerHTML" { "+ section" }
                     }
+                    (PreEscaped(&b.html))
+                }
+                @if !under[i].is_empty() {
+                    div.thr { @for t in &under[i] { (thread_card(t, base, viewing)) } }
+                }
+                div.slot id={ "slot-" (i) } {}
+            }
+        }
+    }
+}
+
+fn thread_card(t: &comments::Thread, base: &str, viewing: i64) -> Markup {
+    let earlier = t.revision != viewing;
+    let resolved = t.status == "resolved";
+    let (to, verb) = if resolved {
+        ("open", "Reopen")
+    } else {
+        ("resolved", "Resolve")
+    };
+    let loc = &t.locator;
+    html! {
+        div.thread.earlier[earlier].resolved[resolved] id={ "t" (t.id) } {
+            div.th {
+                b { (t.author) } span.pill { (t.role) }
+                @if earlier { span.pill.label { "earlier revision" } span.mut.small { "r" (t.revision) } }
+                @if let Some(p) = &loc.section_path {
+                    span.mut.small { "on " (p) }
+                } @else if let Some(a) = loc.line_start {
+                    span.mut.small {
+                        @if loc.line_end.is_some_and(|b| b != a) {
+                            "lines " (a) "-" (loc.line_end.unwrap_or(a))
+                        } @else { "line " (a) }
+                    }
+                }
+                @if resolved { span.pill { "resolved" } }
+                span.mut.small { (short_time(&t.created_at)) }
+            }
+            @if earlier && let Some(q) = &loc.quoted_text { pre.quote { (q) } }
+            div.msg { (t.body) }
+            @for r in &t.replies {
+                div.reply {
+                    b { (r.author) } span.pill { (r.role) }
+                    span.mut.small { (short_time(&r.created_at)) }
+                    div.msg { (r.body) }
+                }
+            }
+            form.replyf hx-post={ (base) "/threads/" (t.id) "/reply" }
+                hx-target="#live" hx-swap="outerHTML" {
+                textarea name="body" rows="2" required placeholder="Reply" {}
+                div.row {
+                    button type="submit" { "Reply" }
+                    button type="button" hx-post={ (base) "/threads/" (t.id) "/status" }
+                        hx-vals=(serde_json::json!({ "status": to }).to_string())
+                        hx-target="#live" hx-swap="outerHTML" { (verb) }
                 }
             }
         }
@@ -595,68 +979,116 @@ fn safe_href(dest: &str) -> bool {
     }
 }
 
-/// Markdown to HTML, safe to embed: raw HTML is dropped, images become their
-/// alt text (Artifact embeds are rendered elsewhere), links with other than
-/// http, https, mailto or relative targets lose their `href`, and every link
-/// gets `rel="noopener noreferrer"`. Top-level headings get `id="s<n>"`
-/// (1-based, in the order `sections::parse` lists them) for the outline.
-pub(crate) fn render_markdown(src: &str) -> String {
+/// One top-level block of the document.
+struct Block {
+    html: String,
+    /// Inclusive 1-based source line range.
+    first: i64,
+    last: i64,
+    /// Index into `sections::parse`'s headings when this block is one.
+    heading: Option<usize>,
+}
+
+/// Markdown to HTML, safe to embed, split into top-level blocks: raw HTML is
+/// dropped, images become their alt text (Artifact embeds are rendered
+/// elsewhere), links with other than http, https, mailto or relative targets
+/// lose their `href`, and every link gets `rel="noopener noreferrer"`.
+/// Top-level headings get `id="s<n>"` (1-based, in the order
+/// `sections::parse` lists them) for the outline.
+fn render_blocks(src: &str) -> Vec<Block> {
     let opts = Options::ENABLE_YAML_STYLE_METADATA_BLOCKS
         | Options::ENABLE_TABLES
         | Options::ENABLE_STRIKETHROUGH;
+    let mut line_starts = vec![0usize];
+    line_starts.extend(src.match_indices('\n').map(|(i, _)| i + 1));
+    let line = |off: usize| line_starts.partition_point(|&s| s <= off) as i64;
+
     // Same container rule as `sections::parse`.
     let mut depth = 0usize;
     let mut headings = 0usize;
     let mut in_meta = false;
-    let events = Parser::new_ext(src, opts).filter_map(|ev| match ev {
-        Event::Html(_) | Event::InlineHtml(_) => None,
-        Event::Start(Tag::MetadataBlock(_)) => {
-            in_meta = true;
-            None
+    // Nesting of every tag, to find where a top-level block ends.
+    let mut nest = 0usize;
+    let mut span = (0usize, 0usize);
+    let mut heading = None;
+    let mut cur: Vec<Event> = Vec::new();
+    let mut blocks = Vec::new();
+    for (ev, range) in Parser::new_ext(src, opts).into_offset_iter() {
+        if nest == 0 {
+            span = (range.start, range.end);
+            heading = None;
         }
-        Event::End(TagEnd::MetadataBlock(_)) => {
-            in_meta = false;
-            None
-        }
-        Event::Text(_) if in_meta => None,
-        Event::Start(Tag::Image { .. }) | Event::End(TagEnd::Image) => None,
-        Event::Start(Tag::Link {
-            dest_url, title, ..
-        }) => {
-            let esc = |s: &str| html! { (s) }.into_string();
-            let mut a = String::from("<a");
-            if safe_href(&dest_url) {
-                a.push_str(&format!(" href=\"{}\"", esc(&dest_url)));
+        let (starts, ends) = (matches!(ev, Event::Start(_)), matches!(ev, Event::End(_)));
+        let out = match ev {
+            Event::Html(_) | Event::InlineHtml(_) => None,
+            Event::Start(Tag::MetadataBlock(_)) => {
+                in_meta = true;
+                None
             }
-            if !title.is_empty() {
-                a.push_str(&format!(" title=\"{}\"", esc(&title)));
+            Event::End(TagEnd::MetadataBlock(_)) => {
+                in_meta = false;
+                None
             }
-            a.push_str(" rel=\"noopener noreferrer\">");
-            Some(Event::Html(a.into()))
+            Event::Text(_) if in_meta => None,
+            Event::Start(Tag::Image { .. }) | Event::End(TagEnd::Image) => None,
+            Event::Start(Tag::Link {
+                dest_url, title, ..
+            }) => {
+                let esc = |s: &str| html! { (s) }.into_string();
+                let mut a = String::from("<a");
+                if safe_href(&dest_url) {
+                    a.push_str(&format!(" href=\"{}\"", esc(&dest_url)));
+                }
+                if !title.is_empty() {
+                    a.push_str(&format!(" title=\"{}\"", esc(&title)));
+                }
+                a.push_str(" rel=\"noopener noreferrer\">");
+                Some(Event::Html(a.into()))
+            }
+            Event::Start(Tag::Heading { level, .. }) if depth == 0 => {
+                headings += 1;
+                heading = Some(headings - 1);
+                Some(Event::Html(
+                    format!("<h{} id=\"s{headings}\">", level as usize).into(),
+                ))
+            }
+            ev @ Event::Start(
+                Tag::BlockQuote(_) | Tag::List(_) | Tag::Item | Tag::FootnoteDefinition(_),
+            ) => {
+                depth += 1;
+                Some(ev)
+            }
+            ev @ Event::End(
+                TagEnd::BlockQuote(_) | TagEnd::List(_) | TagEnd::Item | TagEnd::FootnoteDefinition,
+            ) => {
+                depth = depth.saturating_sub(1);
+                Some(ev)
+            }
+            ev => Some(ev),
+        };
+        cur.extend(out);
+        nest += starts as usize;
+        nest = nest.saturating_sub(ends as usize);
+        if nest == 0 {
+            let mut html = String::new();
+            pulldown_cmark::html::push_html(&mut html, cur.drain(..));
+            if !html.trim().is_empty() {
+                blocks.push(Block {
+                    html,
+                    first: line(span.0),
+                    last: line(span.1.saturating_sub(1).max(span.0)),
+                    heading,
+                });
+            }
         }
-        Event::Start(Tag::Heading { level, .. }) if depth == 0 => {
-            headings += 1;
-            Some(Event::Html(
-                format!("<h{} id=\"s{headings}\">", level as usize).into(),
-            ))
-        }
-        ev @ Event::Start(
-            Tag::BlockQuote(_) | Tag::List(_) | Tag::Item | Tag::FootnoteDefinition(_),
-        ) => {
-            depth += 1;
-            Some(ev)
-        }
-        ev @ Event::End(
-            TagEnd::BlockQuote(_) | TagEnd::List(_) | TagEnd::Item | TagEnd::FootnoteDefinition,
-        ) => {
-            depth = depth.saturating_sub(1);
-            Some(ev)
-        }
-        ev => Some(ev),
-    });
-    let mut out = String::new();
-    pulldown_cmark::html::push_html(&mut out, events);
-    out
+    }
+    blocks
+}
+
+/// The markdown of `src` as one HTML string (see [`render_blocks`]).
+#[cfg(test)]
+fn render_markdown(src: &str) -> String {
+    render_blocks(src).into_iter().map(|b| b.html).collect()
 }
 
 #[cfg(test)]
@@ -734,6 +1166,29 @@ mod tests {
         let n = sections::parse(src).len();
         assert_eq!(n, 3);
         assert_eq!(out.matches(" id=\"s").count(), n, "{out}");
+    }
+
+    #[test]
+    fn blocks_carry_line_spans_and_heading_indexes() {
+        let src = "---\ntitle: x\n---\n\n# A\n\npara one\nline two\n\n```\ncode\n```\n\n## B\n";
+        let b = render_blocks(src);
+        let spans: Vec<_> = b.iter().map(|b| (b.first, b.last, b.heading)).collect();
+        assert_eq!(
+            spans,
+            vec![
+                (5, 5, Some(0)),
+                (7, 8, None),
+                (10, 12, None),
+                (14, 14, Some(1))
+            ],
+            "{:?}",
+            b.iter().map(|b| &b.html).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn app_js_pauses_polling_while_hidden() {
+        assert!(APP_JS.contains("document.hidden") && APP_JS.contains("htmx:beforeRequest"));
     }
 
     #[test]

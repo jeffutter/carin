@@ -20,7 +20,8 @@ A plain table: name, Kind, project and worktree, latest Revision, open Thread co
 - **Other Kinds** (html, image, diagram): the same page with the Kind's frame in place of the text. Comments are on the whole Revision.
 - **Threads from other Revisions**: an open Thread made on an earlier Revision still shows when another Revision is viewed, with a dashed border and an "earlier revision" label. A resolved Thread from another Revision is hidden.
 - **Phones**: below about 800 px the layout collapses to one column and the sidebar becomes static.
-- **Live refresh**: an htmx poll every 2 s on the Artifact page, paused while the tab is hidden, using the same latest-comment check as `--wait`. Fixed, no flag. The UI does not use the long-poll endpoint.
+- **Live refresh**: an htmx poll every 2 s on the Artifact page, paused while the tab is hidden, using the same latest-comment check as `--wait`. Fixed, no flag. The UI does not use the long-poll endpoint. The poll sends a change marker (highest Comment id, a sum over resolved Thread ids, latest Revision) and gets 204 when it is unchanged; the marker also covers resolve and reopen, which add no Comment. A refresh is skipped while a compose form is open or a textarea holds text, so a draft is never wiped.
+- **Writes**: POSTs need htmx's `HX-Request` header and, when the browser sends `Origin`, one that matches `Host`. Errors are fixed 4xx strings.
 
 ### Reviewer attention
 

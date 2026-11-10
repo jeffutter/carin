@@ -739,7 +739,7 @@ mod tests {
         assert!(text(&same).contains("ONE"));
         let (_, _, old) = get(&f.ui, &format!("/a/{id}@1")).await;
         let old = text(&old);
-        assert!(old.contains("one") && !old.contains("ONE"));
+        assert!(old.contains("<p>one</p>") && !old.contains("<p>ONE</p>"));
         assert!(
             old.contains(&format!("href=\"/a/{id}@2\"")) && old.contains("not the latest"),
             "{old}"
@@ -820,7 +820,11 @@ mod tests {
         let f = Fixture::new();
         let (_, _, page) = get(&f.ui, "/").await;
         let page = text(&page);
-        for (ext, ct) in [("htmx.js", "text/javascript"), ("app.css", "text/css")] {
+        for (ext, ct) in [
+            ("htmx.js", "text/javascript"),
+            ("app.js", "text/javascript"),
+            ("app.css", "text/css"),
+        ] {
             let start = page.find("/static/").unwrap_or_else(|| panic!("{page}"));
             let _ = start;
             let href = page
@@ -836,6 +840,253 @@ mod tests {
             let stale = href.replace("/static/", "/static/x");
             assert_eq!(get(&f.ui, &stale).await.0, StatusCode::NOT_FOUND);
         }
+    }
+
+    async fn post(router: &Router, uri: &str, form: &str, htmx: bool) -> (StatusCode, String) {
+        let mut req =
+            Request::post(uri).header("content-type", "application/x-www-form-urlencoded");
+        if htmx {
+            req = req.header("hx-request", "true");
+        }
+        let res = router
+            .clone()
+            .oneshot(req.body(Body::from(form.to_string())).unwrap())
+            .await
+            .unwrap();
+        let (parts, body) = res.into_parts();
+        (
+            parts.status,
+            text(&body.collect().await.unwrap().to_bytes()),
+        )
+    }
+
+    fn threads(f: &Fixture, id: &str) -> Vec<crate::comments::Thread> {
+        let conn = db::open(&f.db).unwrap();
+        crate::comments::list(
+            &conn,
+            &ctx(&f.db),
+            &crate::comments::ListQuery {
+                artifact: Some(id.to_string()),
+                all: true,
+                since: None,
+                scope: crate::scope::ScopeFilter::unscoped(),
+            },
+        )
+        .unwrap()
+        .threads
+    }
+
+    #[tokio::test]
+    async fn reviewer_posts_replies_resolves_and_reopens() {
+        let f = Fixture::new();
+        let id = md(&f, "doc", "# Goal\n\none\n\n## Design\n\ntwo\n");
+        // Gutter buttons and the per-heading button are on the page.
+        let (_, _, page) = get(&f.ui, &format!("/a/{id}")).await;
+        let page = text(&page);
+        assert!(
+            page.contains(&format!("hx-get=\"/a/{id}@1/compose?line=3\"")),
+            "{page}"
+        );
+        assert!(
+            page.contains("+ section") && page.contains("Goal &gt; Design"),
+            "{page}"
+        );
+        let (st, _, form) = get(&f.ui, &format!("/a/{id}@1/compose?line=3")).await;
+        assert_eq!(st, StatusCode::OK);
+        assert!(text(&form).contains("name=\"line\" value=\"3\""));
+        let (st, _, _) = get(&f.ui, &format!("/a/{id}@1/compose")).await;
+        assert_eq!(st, StatusCode::BAD_REQUEST);
+
+        // Writes need htmx's header, and a same-origin Origin if one is sent.
+        let new = format!("/a/{id}@1/threads");
+        assert_eq!(
+            post(&f.ui, &new, "body=x&line=3", false).await.0,
+            StatusCode::FORBIDDEN
+        );
+        let res =
+            f.ui.clone()
+                .oneshot(
+                    Request::post(&new)
+                        .header("content-type", "application/x-www-form-urlencoded")
+                        .header("hx-request", "true")
+                        .header("host", "127.0.0.1:7878")
+                        .header("origin", "http://evil.example")
+                        .body(Body::from("body=x&line=3"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        assert!(threads(&f, &id).is_empty());
+
+        // New Thread on a line: shown under its block, attributed to the reviewer.
+        let (st, frag) = post(&f.ui, &new, "body=%3Cb%3Ehello%3C%2Fb%3E&line=3", true).await;
+        assert_eq!(st, StatusCode::OK, "{frag}");
+        assert!(frag.starts_with("<div id=\"live\""), "{frag}");
+        assert!(frag.contains("&lt;b&gt;hello&lt;/b&gt;") && !frag.contains("<b>hello"));
+        let t = threads(&f, &id);
+        assert_eq!(t.len(), 1);
+        assert_eq!(
+            (t[0].author.as_str(), t[0].role.as_str()),
+            ("rev", "reviewer")
+        );
+        assert_eq!(t[0].locator.line_start, Some(3));
+        let tid = t[0].id;
+        // Section Thread.
+        let (st, _) = post(&f.ui, &new, "body=sec&section=Goal+%3E+Design", true).await;
+        assert_eq!(st, StatusCode::OK);
+        assert_eq!(
+            threads(&f, &id)[1].locator.section_path.as_deref(),
+            Some("Goal > Design")
+        );
+        // Reply, resolve, reopen.
+        let base = format!("/a/{id}@1/threads/{tid}");
+        let (st, _) = post(&f.ui, &format!("{base}/reply"), "body=again", true).await;
+        assert_eq!(st, StatusCode::OK);
+        let t = threads(&f, &id);
+        assert_eq!(t[0].replies.len(), 1);
+        assert_eq!(t[0].replies[0].author, "rev");
+        assert_eq!(t[0].replies[0].role, "reviewer");
+        let (st, frag) = post(&f.ui, &format!("{base}/status"), "status=resolved", true).await;
+        assert_eq!(st, StatusCode::OK);
+        assert_eq!(threads(&f, &id)[0].status, "resolved");
+        assert!(frag.contains("Reopen"), "{frag}");
+        let (_, _) = post(&f.ui, &format!("{base}/status"), "status=open", true).await;
+        assert_eq!(threads(&f, &id)[0].status, "open");
+        // Bad input is a fixed 4xx and writes nothing.
+        for (uri, form, want) in [
+            (
+                format!("{base}/status"),
+                "status=bogus",
+                StatusCode::BAD_REQUEST,
+            ),
+            (new.clone(), "body=+&line=3", StatusCode::BAD_REQUEST),
+            (new.clone(), "body=x&line=99", StatusCode::BAD_REQUEST),
+            (
+                format!("/a/{id}@1/threads/999/status"),
+                "status=open",
+                StatusCode::NOT_FOUND,
+            ),
+            (
+                format!("/a/{id}@7/threads"),
+                "body=x",
+                StatusCode::NOT_FOUND,
+            ),
+        ] {
+            let (st, body) = post(&f.ui, &uri, form, true).await;
+            assert_eq!(st, want, "{uri} {body}");
+            assert!(body == "bad request" || body == "not found", "{body}");
+        }
+        assert_eq!(threads(&f, &id).len(), 2);
+        // A Thread of another Artifact cannot be resolved through this one.
+        let other = md(&f, "other", "# O\n");
+        let (st, _) = post(
+            &f.ui,
+            &format!("/a/{other}/threads/{tid}/status"),
+            "status=resolved",
+            true,
+        )
+        .await;
+        assert_eq!(st, StatusCode::BAD_REQUEST);
+        assert_eq!(threads(&f, &id)[0].status, "open");
+    }
+
+    #[tokio::test]
+    async fn live_poll_sees_cli_comments_and_resolves() {
+        let f = Fixture::new();
+        let id = md(&f, "doc", "# Goal\n\none\n");
+        let (_, _, page) = get(&f.ui, &format!("/a/{id}")).await;
+        let page = text(&page);
+        assert!(page.contains("data-poll") && page.contains("hx-trigger=\"every 2s\""));
+        let marker = page
+            .split("/live?m=")
+            .nth(1)
+            .and_then(|r| r.split('"').next())
+            .unwrap()
+            .to_string();
+        let live = format!("/a/{id}@1/live?m={marker}");
+        assert_eq!(get(&f.ui, &live).await.0, StatusCode::NO_CONTENT);
+        // A Comment posted from elsewhere changes the marker and shows up.
+        comment(
+            &f,
+            &id,
+            "from the CLI",
+            crate::comments::Locator {
+                lines: Some((3, 3)),
+                section: None,
+            },
+        );
+        let (st, _, frag) = get(&f.ui, &live).await;
+        assert_eq!(st, StatusCode::OK);
+        let frag = text(&frag);
+        assert!(frag.starts_with("<div id=\"live\"") && frag.contains("from the CLI"));
+        assert_eq!(frag.matches("pill open").count(), 1, "{frag}");
+        // A resolve adds no Comment but still changes the marker.
+        let marker = frag
+            .split("/live?m=")
+            .nth(1)
+            .and_then(|r| r.split('"').next())
+            .unwrap()
+            .to_string();
+        let live = format!("/a/{id}@1/live?m={marker}");
+        assert_eq!(get(&f.ui, &live).await.0, StatusCode::NO_CONTENT);
+        let tid = threads(&f, &id)[0].id;
+        crate::comments::set_status(&mut db::open(&f.db).unwrap(), tid, "resolved").unwrap();
+        let (st, _, frag) = get(&f.ui, &live).await;
+        assert_eq!(st, StatusCode::OK);
+        assert_eq!(text(&frag).matches("pill open").count(), 0);
+        assert_eq!(
+            get(&f.ui, &format!("/a/{id}@9/live")).await.0,
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    #[tokio::test]
+    async fn earlier_revision_threads_are_dashed_and_resolved_ones_hidden() {
+        let f = Fixture::new();
+        let id = md(&f, "doc", "# Goal\n\none\n\n## Design\n\ntwo\n");
+        let loc = |s: &str| crate::comments::Locator {
+            lines: None,
+            section: Some(s.into()),
+        };
+        comment(&f, &id, "open-on-r1", loc("Goal > Design"));
+        comment(&f, &id, "resolved-on-r1", loc("Goal"));
+        comment(
+            &f,
+            &id,
+            "line-on-r1",
+            crate::comments::Locator {
+                lines: Some((3, 3)),
+                section: None,
+            },
+        );
+        let resolved = threads(&f, &id)[1].id;
+        crate::comments::set_status(&mut db::open(&f.db).unwrap(), resolved, "resolved").unwrap();
+        f.edit(
+            &id,
+            files(&[("a.md", b"# Goal\n\nONE\n\n## Design\n\ntwo\n")]),
+        );
+        let (_, _, r2) = get(&f.ui, &format!("/a/{id}")).await;
+        let r2 = text(&r2);
+        assert!(
+            r2.contains("open-on-r1") && r2.contains("line-on-r1"),
+            "{r2}"
+        );
+        assert!(!r2.contains("resolved-on-r1"), "{r2}");
+        assert_eq!(r2.matches("earlier revision").count(), 2, "{r2}");
+        assert_eq!(r2.matches("class=\"thread earlier\"").count(), 2, "{r2}");
+        // Section Threads sit in the Section; the outline counts them.
+        assert!(r2.find("Design</h2>").unwrap() < r2.find("open-on-r1").unwrap());
+        assert_eq!(r2.matches("pill open").count(), 1, "{r2}");
+        // On its own Revision the resolved Thread shows, not dashed.
+        let (_, _, r1) = get(&f.ui, &format!("/a/{id}@1")).await;
+        let r1 = text(&r1);
+        assert!(r1.contains("resolved-on-r1"), "{r1}");
+        assert!(!r1.contains("earlier revision"), "{r1}");
+        assert!(r1.contains("class=\"thread resolved\""), "{r1}");
+        // The list counts open Threads only.
+        let (_, _, list) = get(&f.ui, "/").await;
+        assert!(text(&list).contains("<span class=\"pill open\">2</span>"));
     }
 
     #[tokio::test]

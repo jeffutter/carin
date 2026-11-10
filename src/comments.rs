@@ -109,6 +109,26 @@ fn highest_comment_id(conn: &Connection) -> Result<i64, Error> {
     .map_err(db_err)
 }
 
+/// A cheap fingerprint of everything the review UI shows for one Artifact:
+/// changes whenever a Comment is added (the `--wait` signal,
+/// [`highest_comment_id`]), a Thread is resolved or reopened (which adds no
+/// Comment), or a Revision is added. Equal markers mean nothing to redraw.
+pub fn change_marker(conn: &Connection, artifact: &str) -> Result<String, Error> {
+    let tx = conn.unchecked_transaction().map_err(db_err)?;
+    let highest = highest_comment_id(&tx)?;
+    let latest = latest_revision(&tx, artifact)?;
+    // Root ids are unique, so toggling any one Thread changes the sum.
+    let resolved: i64 = tx
+        .query_row(
+            "SELECT COALESCE(SUM(id), 0) FROM comments
+             WHERE artifact_id = ?1 AND parent_id IS NULL AND status = 'resolved'",
+            [artifact],
+            |r| r.get(0),
+        )
+        .map_err(db_err)?;
+    Ok(format!("{highest}-{resolved}-{latest}"))
+}
+
 fn latest_revision(conn: &Connection, artifact: &str) -> Result<i64, Error> {
     conn.query_row(
         "SELECT MAX(number) FROM revisions WHERE artifact_id = ?1",
