@@ -1418,6 +1418,33 @@ mod comments {
     }
 
     #[test]
+    fn wait_with_max_u64_timeout_does_not_panic() {
+        use std::process::Stdio;
+        let (_d, db, id) = setup();
+        let child = base(&db)
+            .args([
+                "comment",
+                "list",
+                &id,
+                "--wait",
+                "--timeout",
+                "18446744073709551615",
+            ])
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        ok(
+            &db,
+            &["--role", "reviewer", "comment", "add", &id, "new one"],
+        );
+        let o = child.wait_with_output().unwrap();
+        assert_eq!(o.status.code(), Some(0));
+        let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(v["threads"][0]["body"], "new one");
+    }
+
+    #[test]
     fn wait_timeout_exits_five_with_empty_result() {
         let (_d, db, id) = setup();
         ok(&db, &["comment", "add", &id, "old"]);

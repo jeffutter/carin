@@ -309,7 +309,8 @@ pub fn wait(
     q: &ListQuery,
     timeout: Duration,
 ) -> Result<WaitOutcome, Error> {
-    let deadline = Instant::now() + timeout;
+    // None when the timeout overflows Instant: wait without a deadline.
+    let deadline = Instant::now().checked_add(timeout);
     let baseline = match q.since {
         Some(n) => n,
         None => {
@@ -330,11 +331,18 @@ pub fn wait(
         if !current.threads.is_empty() {
             return Ok(WaitOutcome::Ready(current));
         }
-        let now = Instant::now();
-        if now >= deadline {
-            return Ok(WaitOutcome::TimedOut(current));
-        }
-        std::thread::sleep((deadline - now).min(Duration::from_millis(WAIT_POLL_MS)));
+        let poll = Duration::from_millis(WAIT_POLL_MS);
+        let nap = match deadline {
+            Some(d) => {
+                let now = Instant::now();
+                if now >= d {
+                    return Ok(WaitOutcome::TimedOut(current));
+                }
+                (d - now).min(poll)
+            }
+            None => poll,
+        };
+        std::thread::sleep(nap);
         current = list_inner(conn, ctx, &newer, true)?;
     }
 }
