@@ -115,6 +115,11 @@ pub enum Command {
         #[arg(long)]
         text: bool,
     },
+    /// Comments and Threads
+    Comment {
+        #[command(subcommand)]
+        action: CommentAction,
+    },
     /// Delete Artifacts with all their Revisions
     Delete {
         /// Artifact ids
@@ -123,6 +128,61 @@ pub enum Command {
         /// Confirm the deletion (there is no prompt)
         #[arg(long)]
         yes: bool,
+    },
+}
+
+/// `a-b` or a single line `a`, 1-based and inclusive.
+fn parse_lines(s: &str) -> Result<(i64, i64), String> {
+    let bad = || format!("bad line range {s:?}: use a-b or a single line number");
+    let num = |t: &str| t.parse::<i64>().ok().filter(|n| *n >= 1).ok_or_else(bad);
+    match s.split_once('-') {
+        Some((a, b)) => {
+            let (a, b) = (num(a)?, num(b)?);
+            if b < a {
+                return Err(bad());
+            }
+            Ok((a, b))
+        }
+        None => num(s).map(|n| (n, n)),
+    }
+}
+
+#[derive(Debug, Subcommand)]
+pub enum CommentAction {
+    /// Add a Comment (a new Thread, or a reply with --reply)
+    Add {
+        /// `abc123` or `abc123@2`; defaults to the latest Revision
+        target: String,
+        /// Comment text, or `-` for stdin
+        body: String,
+        /// Anchor to a line range of a text Artifact (`a-b` or `a`); the quote is stored
+        #[arg(long, value_parser = parse_lines, conflicts_with = "reply")]
+        lines: Option<(i64, i64)>,
+        /// Anchor to a markdown Section ("A > B"), resolved against the Comment's own Revision
+        #[arg(long, conflicts_with = "reply")]
+        section: Option<String>,
+        /// Reply in the Thread of this root Comment id
+        #[arg(long, value_name = "COMMENT_ID")]
+        reply: Option<i64>,
+    },
+    /// Resolve a Thread
+    Resolve { thread_id: i64 },
+    /// Reopen a resolved Thread
+    Reopen { thread_id: i64 },
+    /// List Threads (open ones by default, on any Revision, stale included)
+    List {
+        /// Only this Artifact (no `@revision`); ignores the Session scope
+        target: Option<String>,
+        /// Include resolved Threads
+        #[arg(long)]
+        all: bool,
+        /// Only Threads holding a Comment newer than this id, with all their
+        /// replies; the open/--all rule still applies
+        #[arg(long, value_name = "COMMENT_ID")]
+        since: Option<i64>,
+        /// Print a table instead of JSON
+        #[arg(long)]
+        text: bool,
     },
 }
 

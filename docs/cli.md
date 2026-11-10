@@ -75,7 +75,7 @@ Newest activity first. Each row: id, Kind, name, latest Revision, open Thread co
 
 Output is `{"artifacts": [...]}`. Stored bytes is the sum of the distinct blobs any Revision of the Artifact references. `--session` (the global flag, not the `CLAUDE_CODE_SESSION_ID` fallback) and `--mine` match the Session or author of the latest Revision (the one the author column shows); `--mine` uses the caller's Session if it has one, else its author. `--older-than` takes `30d`, `12h`, `90m`, `45s` or `2w` and compares last-updated. `--text` columns: id, kind, name, rev, open, author, bytes, updated, project, worktree (`-` for null).
 
-Filters: `--kind`, `--session`, `--mine`, `--open` (rejected with exit 2 until Threads exist), `--older-than <duration>`, `--limit` (default 50), plus the scoping flags above. No cursor in v1. Defaults to the detected scope; unscoped outside a project.
+Filters: `--kind`, `--session`, `--mine`, `--open` (only Artifacts with an open Thread), `--older-than <duration>`, `--limit` (default 50), plus the scoping flags above. No cursor in v1. Defaults to the detected scope; unscoped outside a project.
 
 ### delete
 
@@ -85,8 +85,8 @@ Filters: `--kind`, `--session`, `--mine`, `--open` (rejected with exit 2 until T
 
 - `comment add <id>[@rev] <body|->` with `--lines a-b` and, for markdown, `--section "A > B"`. `--reply <comment-id>` replies in a Thread and takes no locator.
 - `comment resolve <thread-id>` and `comment reopen <thread-id>`.
-- `comment list [<id>]` shows open Threads, on any Revision, for the caller's Artifacts: with a Session it is those of that Session (project ignored); with none it falls back to the same scope as `list` and takes the same two widening flags. `--all` includes resolved Threads. `--since <id>` returns only Comments newer than the id, the incremental view. `--wait` blocks until there is something new, `--timeout <secs>` (default 60).
-- Output includes `highest_comment_id`; every read returns it so the Agent passes it as the next `--since`. Each Thread shows `revision`, `latest_revision`, `stale`, the quoted text and the locator.
+- `comment list [<id>]` shows open Threads, on any Revision, for the caller's Artifacts: with a Session it is those of that Session (project ignored); with none it falls back to the same scope as `list` and takes the same two widening flags. `--all` includes resolved Threads. `--since <id>` returns only Threads holding a Comment newer than the id (the whole Thread, replies included), the incremental view; the open/`--all` rule still applies on top, so a new reply in a resolved Thread surfaces only with `--all`. With an explicit `<id>` the Session scope is ignored. `--lines` takes `a-b` or a single line; a reply (`--reply <root-comment-id>`) conflicts with both locators. `--wait` blocks until there is something new, `--timeout <secs>` (default 60).
+- Output includes `highest_comment_id`, the highest id ever issued (it does not drop when an Artifact is deleted); every read returns it so the Agent passes it as the next `--since`. Each Thread shows `revision`, `latest_revision`, `stale`, the quoted text and the locator.
 - `--wait` is the CLI polling sqlite every 500 ms; it needs no server. A timeout is exit 5.
 
 ### serve

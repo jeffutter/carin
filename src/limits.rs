@@ -4,6 +4,7 @@ use crate::error::Error;
 
 pub const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
 pub const MAX_REVISION_BYTES: u64 = 25 * 1024 * 1024;
+pub const MAX_COMMENT_BYTES: u64 = 64 * 1024;
 pub const MAX_BUNDLE_FILES: usize = 200;
 
 pub fn check_file(size: u64) -> Result<(), Error> {
@@ -19,6 +20,15 @@ pub fn check_revision(total: u64) -> Result<(), Error> {
     if total > MAX_REVISION_BYTES {
         return Err(Error::Rejected(format!(
             "revision is {total} bytes, over the per-Revision limit of 25 MiB ({MAX_REVISION_BYTES} bytes)"
+        )));
+    }
+    Ok(())
+}
+
+pub fn check_comment(size: u64) -> Result<(), Error> {
+    if size > MAX_COMMENT_BYTES {
+        return Err(Error::Rejected(format!(
+            "comment is {size} bytes, over the per-Comment limit of 64 KiB ({MAX_COMMENT_BYTES} bytes)"
         )));
     }
     Ok(())

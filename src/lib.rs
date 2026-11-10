@@ -1,5 +1,6 @@
 pub mod artifact;
 pub mod cli;
+pub mod comments;
 pub mod config;
 pub mod db;
 pub mod error;
@@ -10,7 +11,7 @@ pub mod sections;
 
 use std::io::{Read, Write};
 
-use cli::{Command, Context};
+use cli::{Command, CommentAction, Context};
 use error::Error;
 
 fn read_input(path: &str) -> Result<Vec<u8>, Error> {
@@ -26,6 +27,18 @@ fn read_input(path: &str) -> Result<Vec<u8>, Error> {
     let meta = std::fs::metadata(path).map_err(io)?;
     limits::check_file(meta.len())?;
     std::fs::read(path).map_err(io)
+}
+
+fn read_body(body: &str) -> Result<String, Error> {
+    if body != "-" {
+        return Ok(body.to_string());
+    }
+    let mut buf = Vec::new();
+    std::io::stdin()
+        .take(limits::MAX_COMMENT_BYTES + 1)
+        .read_to_end(&mut buf)
+        .map_err(|e| Error::Usage(format!("cannot read stdin: {e}")))?;
+    String::from_utf8(buf).map_err(|_| Error::Usage("comment body is not valid UTF-8".into()))
 }
 
 pub fn run(command: Command, ctx: &Context) -> Result<(), Error> {
@@ -134,6 +147,7 @@ pub fn run(command: Command, ctx: &Context) -> Result<(), Error> {
             println!("{}", serde_json::json!({ "deleted": deleted }));
             Ok(())
         }
+        Command::Comment { action } => run_comment(action, ctx),
         Command::Outline { target } => {
             let (id, rev) = artifact::parse_target(&target)?;
             let conn = db::open(&ctx.db_path)?;
@@ -160,6 +174,66 @@ pub fn run(command: Command, ctx: &Context) -> Result<(), Error> {
                 .map_err(|e| Error::Unexpected(format!("write failed: {e}")))
         }
     }
+}
+
+fn run_comment(action: CommentAction, ctx: &Context) -> Result<(), Error> {
+    let print = |v: serde_json::Value| println!("{v}");
+    let action_kind = match &action {
+        CommentAction::Resolve { .. } => "resolve",
+        _ => "",
+    };
+    match action {
+        CommentAction::Add {
+            target,
+            body,
+            lines,
+            section,
+            reply,
+        } => {
+            let body = read_body(&body)?;
+            let mut conn = db::open(&ctx.db_path)?;
+            let locator = comments::Locator { lines, section };
+            let r = comments::add(&mut conn, ctx, &target, &body, &locator, reply)?;
+            print(serde_json::to_value(r).expect("added serializes"));
+        }
+        CommentAction::Resolve { thread_id } | CommentAction::Reopen { thread_id } => {
+            let status = if matches!(action_kind, "resolve") {
+                "resolved"
+            } else {
+                "open"
+            };
+            let mut conn = db::open(&ctx.db_path)?;
+            let r = comments::set_status(&mut conn, thread_id, status)?;
+            print(serde_json::to_value(r).expect("thread serializes"));
+        }
+        CommentAction::List {
+            target,
+            all,
+            since,
+            text,
+        } => {
+            if let Some(t) = &target
+                && t.contains('@')
+            {
+                return Err(Error::Usage(
+                    "comment list takes a bare artifact id, not id@revision".into(),
+                ));
+            }
+            let conn = db::open(&ctx.db_path)?;
+            let q = comments::ListQuery {
+                artifact: target,
+                all,
+                since,
+            };
+            let r = comments::list(&conn, ctx, &q)?;
+            if text {
+                print!("{}", comment_table(&r));
+            } else {
+                print(serde_json::to_value(&r).expect("list serializes"));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn list_table(rows: &[artifact::ListRow]) -> String {
@@ -199,6 +273,44 @@ fn list_table(rows: &[artifact::ListRow]) -> String {
             .collect();
         out.push_str(line.join("  ").trim_end());
         out.push('\n');
+    }
+    out
+}
+
+fn comment_table(r: &comments::CommentList) -> String {
+    let mut out = format!("highest_comment_id {}\n", r.highest_comment_id);
+    for t in &r.threads {
+        let loc = match (
+            &t.locator.section_path,
+            t.locator.line_start,
+            t.locator.line_end,
+        ) {
+            (Some(p), _, _) => p.clone(),
+            (None, Some(a), Some(b)) if a == b => format!("L{a}"),
+            (None, Some(a), Some(b)) => format!("L{a}-{b}"),
+            _ => "-".into(),
+        };
+        out.push_str(&format!(
+            "#{} {}@{}{} {} {} {} [{}]: {}\n",
+            t.id,
+            t.artifact_id,
+            t.revision,
+            if t.stale { " (stale)" } else { "" },
+            t.status,
+            t.author,
+            loc,
+            t.role,
+            t.body.lines().next().unwrap_or("")
+        ));
+        for rep in &t.replies {
+            out.push_str(&format!(
+                "    #{} {} [{}]: {}\n",
+                rep.id,
+                rep.author,
+                rep.role,
+                rep.body.lines().next().unwrap_or("")
+            ));
+        }
     }
     out
 }

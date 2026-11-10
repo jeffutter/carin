@@ -275,7 +275,7 @@ pub struct ListFilter {
     pub session: Option<String>,
     /// Latest Revision made by this author.
     pub author: Option<String>,
-    /// Only Artifacts with open Threads. Rejected until Threads exist (TASK-6).
+    /// Only Artifacts with at least one open Thread.
     pub open: bool,
     /// Only Artifacts last updated more than this many seconds ago.
     pub older_than_secs: Option<i64>,
@@ -300,16 +300,9 @@ pub struct ListRow {
 
 /// Artifacts, newest activity first.
 pub fn list(conn: &Connection, f: &ListFilter) -> Result<Vec<ListRow>, Error> {
-    // Threads arrive with the comments table (TASK-6); until then none exist,
-    // so a filter on open Threads cannot mean anything.
-    if f.open {
-        return Err(Error::Usage(
-            "--open is not available until Threads exist (TASK-6)".into(),
-        ));
-    }
     let sql = "SELECT a.id, a.kind, a.name,
                 (SELECT MAX(number) FROM revisions WHERE artifact_id = a.id),
-                0,
+                (SELECT COUNT(*) FROM comments c WHERE c.artifact_id = a.id AND c.parent_id IS NULL AND c.status = 'open'),
                 (SELECT author FROM revisions WHERE artifact_id = a.id ORDER BY number DESC LIMIT 1),
                 COALESCE((SELECT SUM(LENGTH(b.bytes)) FROM blobs b WHERE b.sha256 IN
                     (SELECT sha256 FROM revision_files WHERE artifact_id = a.id)), 0),
@@ -321,6 +314,8 @@ pub fn list(conn: &Connection, f: &ListFilter) -> Result<Vec<ListRow>, Error> {
            AND (?3 IS NULL OR EXISTS (SELECT 1 FROM revisions r
                  WHERE r.artifact_id = a.id AND r.number = (SELECT MAX(number) FROM revisions WHERE artifact_id = a.id) AND r.author = ?3))
            AND (?4 IS NULL OR a.updated_at < strftime('%Y-%m-%dT%H:%M:%fZ','now', ?4))
+           AND (?6 = 0 OR EXISTS (SELECT 1 FROM comments c
+                 WHERE c.artifact_id = a.id AND c.parent_id IS NULL AND c.status = 'open'))
          ORDER BY a.updated_at DESC, a.id DESC
          LIMIT ?5";
     let older = f.older_than_secs.map(|n| format!("-{n} seconds"));
@@ -332,7 +327,8 @@ pub fn list(conn: &Connection, f: &ListFilter) -> Result<Vec<ListRow>, Error> {
                 f.session,
                 f.author,
                 older,
-                f.limit
+                f.limit,
+                f.open as i64
             ],
             |r| {
                 Ok(ListRow {

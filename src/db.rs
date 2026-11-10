@@ -55,6 +55,28 @@ CREATE TABLE revision_files (
 );
 ";
 
+const SCHEMA_V2: &str = "
+CREATE TABLE comments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    artifact_id TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    parent_id INTEGER REFERENCES comments(id) ON DELETE CASCADE,
+    author TEXT NOT NULL,
+    role TEXT NOT NULL CHECK (role IN ('agent','reviewer')),
+    session TEXT,
+    body TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    line_start INTEGER,
+    line_end INTEGER,
+    quoted_text TEXT,
+    section_path TEXT,
+    status TEXT CHECK (status IS NULL OR status IN ('open','resolved')),
+    FOREIGN KEY (artifact_id, revision) REFERENCES revisions(artifact_id, number) ON DELETE CASCADE
+);
+CREATE INDEX comments_artifact ON comments(artifact_id, id);
+CREATE INDEX comments_parent ON comments(parent_id);
+";
+
 /// Open (creating the directory and file on first use) and migrate.
 pub fn open(path: &Path) -> Result<Connection, Error> {
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
@@ -91,6 +113,15 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         if v < 1 {
             tx.execute_batch(SCHEMA_V1)?;
             tx.pragma_update(None, "user_version", 1)?;
+        }
+        tx.commit()?;
+    }
+    if version < 2 {
+        let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+        let v: i64 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        if v < 2 {
+            tx.execute_batch(SCHEMA_V2)?;
+            tx.pragma_update(None, "user_version", 2)?;
         }
         tx.commit()?;
     }
@@ -134,7 +165,29 @@ mod tests {
         assert_eq!(pragma(&conn, "foreign_keys"), "1");
         assert_eq!(pragma(&conn, "busy_timeout"), "5000");
         assert_eq!(pragma(&conn, "auto_vacuum"), "1");
-        assert_eq!(pragma(&conn, "user_version"), "1");
+        assert_eq!(pragma(&conn, "user_version"), "2");
+    }
+
+    #[test]
+    fn v1_database_upgrades_to_v2_keeping_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("c.db");
+        {
+            let conn = Connection::open(&p).unwrap();
+            conn.execute_batch(SCHEMA_V1).unwrap();
+            conn.execute_batch(
+                "INSERT INTO artifacts VALUES ('a1','markdown',NULL,'n',NULL,NULL,NULL,'t','t');
+                 PRAGMA user_version = 1;",
+            )
+            .unwrap();
+        }
+        let conn = open(&p).unwrap();
+        assert_eq!(pragma(&conn, "user_version"), "2");
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM artifacts", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
+        conn.execute("SELECT COUNT(*) FROM comments", []).ok();
     }
 
     #[test]

@@ -72,6 +72,7 @@ An edit may name Comment ids it responds to (`--addresses 12,14`). For each, Cai
 - Every Comment belongs to exactly one Revision, with an optional locator. Text content (markdown, mermaid source) takes an optional line range with the quoted text stored on the Comment. Markdown may also take a Section path, resolved only against the Comment's own Revision; the line range and quote are the fallback when a later Revision renames the heading. Image, diagram and html Comments cover the whole Revision.
 - Anchors are never rewritten when later Revisions change the text.
 - A Thread is a root Comment plus flat replies (one level). Either role may reply; either may resolve or reopen. A reply has no locator and stays on its Thread's Revision.
+- `highest_comment_id` comes from the AUTOINCREMENT counter, so it is monotonic even after the Artifact holding the newest Comment is deleted. `comment list --since N` returns whole Threads that hold a Comment with id > N, on top of the open/`--all` rule.
 - A Comment is never refused for being on an older Revision. Reads report `revision`, `latest_revision`, and a derived `stale` flag (the Comment's Revision is not the latest). Open stale Threads are included in the default view, so unresolved feedback on an old Revision still reaches the Agent.
 
 ## Attribution

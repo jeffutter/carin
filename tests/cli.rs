@@ -566,9 +566,8 @@ mod list_delete {
             .output()
             .unwrap();
         assert_eq!(json(&o.stdout)["artifacts"].as_array().unwrap().len(), 2);
-        // --open is rejected until Threads exist
-        let o = base(&db).args(["list", "--open"]).output().unwrap();
-        assert_eq!(o.status.code(), Some(2));
+        // --open needs a Thread; none exist here
+        assert_eq!(list(&db, &["--open"]).len(), 0);
     }
 
     #[test]
@@ -949,5 +948,377 @@ mod sections {
         edit_section(&db, &[&a, "--section", "A"], "# A\nnew\n");
         let out = run(&db, &["get", &a]).stdout;
         assert_eq!(out, b"# A\r\nnew\r\n# B\r\n\r\ny\r\n");
+    }
+}
+
+mod comments {
+    use super::cairn;
+
+    const DOC: &str = "# A\n\nalpha\n\n## B\n\nbeta\ngamma\n\n# C\n\ndelta\n";
+
+    fn base(db: &std::path::Path) -> std::process::Command {
+        let mut c = cairn();
+        for v in [
+            "CAIRN_ROLE",
+            "CAIRN_AGENT",
+            "CAIRN_SESSION",
+            "CLAUDE_CODE_SESSION_ID",
+            "CAIRN_DB",
+        ] {
+            c.env_remove(v);
+        }
+        c.arg("--db").arg(db);
+        c
+    }
+
+    fn run(db: &std::path::Path, args: &[&str]) -> std::process::Output {
+        base(db).args(args).output().unwrap()
+    }
+
+    fn ok(db: &std::path::Path, args: &[&str]) -> serde_json::Value {
+        let o = run(db, args);
+        assert_eq!(
+            o.status.code(),
+            Some(0),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        serde_json::from_slice(&o.stdout).unwrap()
+    }
+
+    fn code(db: &std::path::Path, args: &[&str]) -> Option<i32> {
+        run(db, args).status.code()
+    }
+
+    fn submit(db: &std::path::Path, dir: &std::path::Path, text: &str) -> String {
+        let f = dir.join(format!("d{}.md", text.len()));
+        std::fs::write(&f, text).unwrap();
+        let o = base(db).arg("submit").arg(&f).output().unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+        v["id"].as_str().unwrap().to_string()
+    }
+
+    fn edit(db: &std::path::Path, dir: &std::path::Path, id: &str, text: &str) {
+        let f = dir.join("e.md");
+        std::fs::write(&f, text).unwrap();
+        let o = base(db).args(["edit", id]).arg(&f).output().unwrap();
+        assert_eq!(o.status.code(), Some(0));
+    }
+
+    fn setup() -> (tempfile::TempDir, std::path::PathBuf, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("c.db");
+        let id = submit(&db, dir.path(), DOC);
+        (dir, db, id)
+    }
+
+    #[test]
+    fn lines_store_quote_and_section_stores_path() {
+        let (_d, db, id) = setup();
+        let v = ok(&db, &["comment", "add", &id, "hm", "--lines", "7-8"]);
+        assert_eq!(v["locator"]["quoted_text"], "beta\ngamma");
+        assert_eq!(v["locator"]["line_start"], 7);
+        let v = ok(&db, &["comment", "add", &id, "sec", "--section", "A > B"]);
+        assert_eq!(v["locator"]["section_path"], "A > B");
+        assert_eq!(v["locator"]["quoted_text"], "## B");
+        assert_eq!(v["stale"], false);
+        // bad ranges
+        for r in ["0-2", "3-99", "5-2", "x"] {
+            assert_eq!(
+                code(&db, &["comment", "add", &id, "x", "--lines", r]),
+                Some(2),
+                "{r}"
+            );
+        }
+        assert_eq!(
+            code(&db, &["comment", "add", &id, "x", "--section", "Nope"]),
+            Some(4)
+        );
+        assert_eq!(code(&db, &["comment", "add", "nope", "x"]), Some(3));
+        assert_eq!(code(&db, &["comment", "add", &id, ""]), Some(2));
+    }
+
+    #[test]
+    fn section_resolves_against_the_comments_own_revision() {
+        let (d, db, id) = setup();
+        edit(&db, d.path(), &id, &DOC.replace("## B", "## Renamed"));
+        let target = format!("{id}@1");
+        let v = ok(
+            &db,
+            &["comment", "add", &target, "old", "--section", "A > B"],
+        );
+        assert_eq!(v["locator"]["section_path"], "A > B");
+        assert_eq!(v["stale"], true);
+        assert_eq!(
+            code(&db, &["comment", "add", &id, "new", "--section", "A > B"]),
+            Some(4)
+        );
+    }
+
+    #[test]
+    fn non_text_kind_rejects_lines() {
+        let (_d, db, id) = setup();
+        rusqlite::Connection::open(&db)
+            .unwrap()
+            .execute("UPDATE artifacts SET kind = 'html' WHERE id = ?1", [&id])
+            .unwrap();
+        assert_eq!(
+            code(&db, &["comment", "add", &id, "x", "--lines", "1"]),
+            Some(4)
+        );
+        // a whole-Revision comment is fine
+        ok(&db, &["comment", "add", &id, "whole"]);
+    }
+
+    #[test]
+    fn reply_stays_on_thread_revision_and_rejects_locators() {
+        let (d, db, id) = setup();
+        let root = ok(&db, &["comment", "add", &id, "root", "--lines", "1"]);
+        let rid = root["id"].as_i64().unwrap().to_string();
+        edit(&db, d.path(), &id, "# new\n");
+        edit(&db, d.path(), &id, "# newer\n");
+        let r = ok(
+            &db,
+            &[
+                "--role", "reviewer", "comment", "add", &id, "re", "--reply", &rid,
+            ],
+        );
+        assert_eq!(r["revision"], 1);
+        assert_eq!(r["latest_revision"], 3);
+        assert_eq!(r["thread_id"], root["id"]);
+        let rep = r["id"].as_i64().unwrap().to_string();
+        assert_eq!(
+            code(
+                &db,
+                &["comment", "add", &id, "x", "--reply", &rid, "--lines", "1"]
+            ),
+            Some(2)
+        );
+        assert_eq!(
+            code(
+                &db,
+                &[
+                    "comment",
+                    "add",
+                    &id,
+                    "x",
+                    "--reply",
+                    &rid,
+                    "--section",
+                    "A"
+                ]
+            ),
+            Some(2)
+        );
+        assert_eq!(
+            code(&db, &["comment", "add", &id, "x", "--reply", &rep]),
+            Some(2)
+        );
+        assert_eq!(
+            code(&db, &["comment", "add", &id, "x", "--reply", "9999"]),
+            Some(3)
+        );
+        let t = ok(&db, &["comment", "list", &id]);
+        assert_eq!(t["threads"][0]["replies"].as_array().unwrap().len(), 1);
+        assert_eq!(t["threads"][0]["replies"][0]["role"], "reviewer");
+    }
+
+    #[test]
+    fn resolve_reopen_either_role_and_not_replies() {
+        let (_d, db, id) = setup();
+        let root = ok(&db, &["comment", "add", &id, "root"]);
+        let rid = root["id"].as_i64().unwrap().to_string();
+        let rep = ok(&db, &["comment", "add", &id, "r", "--reply", &rid]);
+        let v = ok(&db, &["--role", "reviewer", "comment", "resolve", &rid]);
+        assert_eq!(v["thread"]["status"], "resolved");
+        assert!(v["highest_comment_id"].as_i64().unwrap() >= 2);
+        assert_eq!(
+            ok(&db, &["comment", "list"])["threads"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
+        let v = ok(&db, &["--role", "agent", "comment", "reopen", &rid]);
+        assert_eq!(v["thread"]["status"], "open");
+        ok(&db, &["--role", "agent", "comment", "resolve", &rid]);
+        ok(&db, &["comment", "resolve", &rid]);
+        let rep_id = rep["id"].as_i64().unwrap().to_string();
+        assert_eq!(code(&db, &["comment", "resolve", &rep_id]), Some(2));
+        assert_eq!(code(&db, &["comment", "reopen", "999"]), Some(3));
+    }
+
+    #[test]
+    fn list_defaults_all_since_and_scoping() {
+        let (d, db, id) = setup();
+        let c1 = ok(&db, &["comment", "add", &id, "one"]);
+        edit(&db, d.path(), &id, "# new\n");
+        let c2 = ok(&db, &["comment", "add", &id, "two"]);
+        let id1 = c1["id"].as_i64().unwrap();
+        let id2 = c2["id"].as_i64().unwrap();
+        // stale open thread is included by default
+        let v = ok(&db, &["comment", "list"]);
+        let ts = v["threads"].as_array().unwrap();
+        assert_eq!(ts.len(), 2);
+        assert_eq!(ts[0]["stale"], true);
+        assert_eq!(ts[1]["stale"], false);
+        assert_eq!(v["highest_comment_id"], id2);
+        ok(&db, &["comment", "resolve", &id1.to_string()]);
+        assert_eq!(
+            ok(&db, &["comment", "list"])["threads"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            ok(&db, &["comment", "list", "--all"])["threads"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        // --since
+        let v = ok(
+            &db,
+            &["comment", "list", "--all", "--since", &id1.to_string()],
+        );
+        assert_eq!(v["threads"].as_array().unwrap().len(), 1);
+        assert_eq!(v["threads"][0]["id"], id2);
+        let v = ok(&db, &["comment", "list", "--since", &id2.to_string()]);
+        assert_eq!(v["threads"].as_array().unwrap().len(), 0);
+        assert_eq!(v["highest_comment_id"], id2);
+        // a new reply surfaces its (open) Thread, whole
+        ok(
+            &db,
+            &["comment", "add", &id, "re", "--reply", &id2.to_string()],
+        );
+        let v = ok(&db, &["comment", "list", "--since", &id2.to_string()]);
+        assert_eq!(v["threads"][0]["replies"].as_array().unwrap().len(), 1);
+        // explicit id scoping and unknown id
+        let other = submit(&db, d.path(), "# other\n");
+        assert_eq!(
+            ok(&db, &["comment", "list", &other])["threads"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
+        assert_eq!(
+            ok(&db, &["comment", "list", &id])["threads"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(code(&db, &["comment", "list", "nope"]), Some(3));
+        assert_eq!(code(&db, &["comment", "list", &format!("{id}@1")]), Some(2));
+        // session scoping: latest Revision's session
+        assert_eq!(
+            ok(&db, &["--session", "s9", "comment", "list"])["threads"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
+        let f = d.path().join("s.md");
+        std::fs::write(&f, "# s\n").unwrap();
+        base(&db)
+            .args(["--session", "s9", "edit", &id])
+            .arg(&f)
+            .output()
+            .unwrap();
+        assert_eq!(
+            ok(&db, &["--session", "s9", "comment", "list"])["threads"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        // --text renders
+        let o = run(&db, &["comment", "list", "--text"]);
+        assert!(String::from_utf8_lossy(&o.stdout).contains("highest_comment_id"));
+    }
+
+    #[test]
+    fn highest_comment_id_is_monotonic_across_artifacts_and_deletes() {
+        let (d, db, a) = setup();
+        let b = submit(&db, d.path(), "# b\n");
+        assert_eq!(ok(&db, &["comment", "list"])["highest_comment_id"], 0);
+        assert_eq!(
+            ok(&db, &["comment", "add", &a, "x"])["highest_comment_id"],
+            1
+        );
+        assert_eq!(
+            ok(&db, &["comment", "add", &b, "y"])["highest_comment_id"],
+            2
+        );
+        ok(&db, &["delete", &b, "--yes"]);
+        assert_eq!(ok(&db, &["comment", "list"])["highest_comment_id"], 2);
+        let v = ok(&db, &["comment", "add", &a, "z"]);
+        assert_eq!(v["id"], 3);
+        assert_eq!(v["highest_comment_id"], 3);
+    }
+
+    #[test]
+    fn list_open_thread_counts_and_delete_cascade() {
+        let (_d, db, id) = setup();
+        let t1 = ok(&db, &["comment", "add", &id, "one"]);
+        ok(&db, &["comment", "add", &id, "two"]);
+        ok(
+            &db,
+            &[
+                "comment",
+                "add",
+                &id,
+                "re",
+                "--reply",
+                &t1["id"].to_string(),
+            ],
+        );
+        let rows = ok(&db, &["list"]);
+        assert_eq!(rows["artifacts"][0]["open_threads"], 2);
+        ok(&db, &["comment", "resolve", &t1["id"].to_string()]);
+        assert_eq!(ok(&db, &["list"])["artifacts"][0]["open_threads"], 1);
+        assert_eq!(
+            ok(&db, &["list", "--open"])["artifacts"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        ok(&db, &["comment", "resolve", "2"]);
+        assert_eq!(
+            ok(&db, &["list", "--open"])["artifacts"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
+        ok(&db, &["delete", &id, "--yes"]);
+        let n: i64 = rusqlite::Connection::open(&db)
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM comments", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn body_from_stdin() {
+        use std::io::Write;
+        use std::process::Stdio;
+        let (_d, db, id) = setup();
+        let mut c = base(&db)
+            .args(["comment", "add", &id, "-"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        c.stdin.take().unwrap().write_all(b"from stdin").unwrap();
+        assert_eq!(c.wait_with_output().unwrap().status.code(), Some(0));
+        assert_eq!(
+            ok(&db, &["comment", "list"])["threads"][0]["body"],
+            "from stdin"
+        );
     }
 }
