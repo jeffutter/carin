@@ -1,0 +1,32 @@
+name: CI # Continuous Integration
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  # `nix flake check` runs the crane checks in flake.nix: build, clippy, fmt and
+  # nextest. Building through Nix is required, not just convenient: Pele and htmx
+  # are embedded from Nix-fetched files (PELE_JS, HTMX_JS), so a plain cargo run
+  # would test a stubbed build.
+  check:
+    name: Flake check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+      - uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: cachix/cachix-action@v17
+        with:
+          name: jeffutter
+          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+      - run: nix flake check --accept-flake-config
+      - run: nix build --accept-flake-config

@@ -85,6 +85,7 @@
           packages = [
             rustToolchain
             pkgs.cargo-nextest
+            pkgs.cargo-release
             pkgs.cargo-watch
             pkgs.clang
             pkgs.sqlite

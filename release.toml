@@ -1,0 +1,9 @@
+# cargo-release config. Usage: `cargo release patch|minor|major --execute`
+# (without --execute it is a dry run).
+
+# Not a library for crates.io; releases are GitHub tarballs built by cd.yml.
+publish = false
+
+# cd.yml fires on tags matching [v]?N.N.N.
+tag-name = "v{{version}}"
+allow-branch = ["main"]
