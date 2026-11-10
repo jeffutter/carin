@@ -49,7 +49,7 @@ CLI and server write the same database concurrently. WAL mode makes that safe; w
 
 Rust with clap, rusqlite, axum, maud, pulldown-cmark and rquickjs. The nix flake copies the layout of `github.com/jeffutter/notectl` and `github.com/jeffutter/graphql-document-utils`: nixpkgs-unstable, flake-utils, rust-overlay, crane, clang plus mold on Linux, nixpkgs-fmt.
 
-- `packages.default`: the crane build. rquickjs needs only `clang` added to `nativeBuildInputs`. Pele's `pele.global.js` is pinned with `fetchzip` and embedded with `include_str!`. htmx is pinned with `fetchurl`. There is no npm and no JavaScript build.
+- `packages.default`: the crane build. rquickjs needs only `clang` added to `nativeBuildInputs`. Pele's `pele.global.js` is pinned with `fetchzip` and embedded with `include_str!`. htmx is pinned with `fetchurl`. There is no npm and no JavaScript build. When `PELE_JS` is unset (plain `cargo build` outside nix), `build.rs` embeds a stub script instead and sets `cfg(cairn_pele_stub)`: everything builds, and Mermaid submit/render fails at runtime with "built without PELE_JS". Build with `nix develop` or `nix build` for Mermaid.
 - `devShells.default`: rust-overlay toolchain, clang and mold on Linux, `cargo-watch`, sqlite. Dev loop: `cargo watch -x 'run -- serve'`.
 - `formatter`: nixpkgs-fmt.
 - `checks`: build, clippy, fmt, and nextest. The nextest run includes the OpenAPI snapshot test and the skill drift tests, so nix CI catches both kinds of drift.

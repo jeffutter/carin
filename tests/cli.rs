@@ -473,6 +473,7 @@ mod roundtrip {
     }
 
     #[test]
+    #[cfg(not(cairn_pele_stub))]
     fn format_flag_still_submits_diagrams() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
@@ -2501,6 +2502,7 @@ mod diagrams {
     use super::cairn;
     use std::path::Path;
 
+    #[cfg(not(cairn_pele_stub))]
     const FLOW: &str = "flowchart LR\n A[Start] --> B{Ok?}\n B -->|yes| C[Done]\n";
     const SVG: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\"><script>x</script></svg>";
 
@@ -2542,6 +2544,7 @@ mod diagrams {
     }
 
     #[test]
+    #[cfg(not(cairn_pele_stub))]
     fn mermaid_submit_get_prints_source_and_list_shows_diagram() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("c.db");
@@ -2556,6 +2559,7 @@ mod diagrams {
     }
 
     #[test]
+    #[cfg(not(cairn_pele_stub))]
     fn invalid_mermaid_exits_four_with_pele_code_and_message() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("c.db");
@@ -2571,6 +2575,7 @@ mod diagrams {
     }
 
     #[test]
+    #[cfg(not(cairn_pele_stub))]
     fn invalid_mermaid_edit_exits_four_and_adds_no_revision() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("c.db");
@@ -2627,6 +2632,7 @@ mod diagrams {
     }
 
     #[test]
+    #[cfg(not(cairn_pele_stub))]
     fn diagrams_have_no_sections_or_out() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("c.db");

@@ -1,16 +1,36 @@
 //! Pele's `pele.global.js` is embedded with `include_str!(env!("PELE_JS"))`.
-//! Fail early with a pointer to the nix devShell, which exports it.
+//!
+//! Inside `nix develop` (and `nix build`) `PELE_JS` points at the real file.
+//! When it is unset, a stub script is written to OUT_DIR instead so plain
+//! `cargo build` / `cargo check` / rust-analyzer still work; Mermaid then
+//! fails at runtime with a clear message, and `cfg(cairn_pele_stub)` is set so
+//! tests that need real Pele can opt out. A set-but-bogus `PELE_JS` is a
+//! misconfiguration and stays a hard error.
 
 fn main() {
     println!("cargo:rerun-if-env-changed=PELE_JS");
+    println!("cargo:rustc-check-cfg=cfg(cairn_pele_stub)");
     match std::env::var("PELE_JS") {
         Ok(p) if std::path::Path::new(&p).is_file() => {
             println!("cargo:rerun-if-changed={p}");
+            println!("cargo:rustc-env=PELE_JS={p}");
         }
         Ok(p) => panic!("PELE_JS={p:?} is not a file; run inside `nix develop`"),
-        Err(_) => panic!(
-            "PELE_JS is not set: it must point at Pele's pele.global.js. \
-             Run cargo inside `nix develop` (the devShell exports it)."
-        ),
+        Err(_) => {
+            let out = std::env::var("OUT_DIR").expect("cargo sets OUT_DIR");
+            let stub = std::path::Path::new(&out).join("pele.stub.js");
+            std::fs::write(
+                &stub,
+                "throw new Error(\"mermaid rendering unavailable: built without PELE_JS \
+                 (build inside nix develop)\");\n",
+            )
+            .expect("write Pele stub");
+            println!("cargo:rustc-env=PELE_JS={}", stub.display());
+            println!("cargo:rustc-cfg=cairn_pele_stub");
+            println!(
+                "cargo:warning=PELE_JS is not set: mermaid diagrams are disabled in this build \
+                 (use `nix develop` or `nix build` for a full build)"
+            );
+        }
     }
 }

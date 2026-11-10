@@ -159,8 +159,12 @@ impl Engine {
             })));
         }
         let ctx = Context::full(&rt).map_err(fail)?;
-        ctx.with(|c| c.eval::<(), _>(PELE_SOURCE).map_err(|e| e.to_string()))
-            .map_err(|e| Error::Unexpected(format!("mermaid engine: cannot load Pele: {e}")))?;
+        ctx.with(|c| {
+            c.eval::<(), _>(PELE_SOURCE)
+                .catch(&c)
+                .map_err(|e| e.to_string())
+        })
+        .map_err(|e| Error::Unexpected(format!("mermaid engine: cannot load Pele: {e}")))?;
         ENGINE_STARTS.fetch_add(1, Ordering::SeqCst);
         Ok(Engine {
             _rt: rt,
@@ -261,8 +265,10 @@ fn render_mermaid(src: &str) -> Result<String, Error> {
 mod tests {
     use super::*;
 
+    #[cfg(not(cairn_pele_stub))]
     const FLOW: &str = "flowchart LR\n A[Start] --> B{Ok?}\n B -->|yes| C[Done]\n B -->|no| A\n";
 
+    #[cfg(not(cairn_pele_stub))]
     fn run_js(code: &str) -> Result<String, Error> {
         with_engine(|ctx| {
             let r = ctx.eval::<String, _>(code);
@@ -271,6 +277,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(cairn_pele_stub))]
     fn valid_mermaid_renders_svg() {
         let svg = render_mermaid(FLOW).unwrap();
         assert!(svg.trim_start().starts_with("<svg"), "{svg}");
@@ -278,6 +285,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(cairn_pele_stub))]
     fn invalid_mermaid_reports_pele_code_and_message() {
         let e = validate(Format::Mermaid, b"flowchart LR\n A -->\n").unwrap_err();
         assert_eq!(e.exit_code(), 4);
@@ -300,6 +308,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(cairn_pele_stub))]
     fn infinite_loop_hits_the_time_limit_and_engine_recovers() {
         let e = run_js("while (true) {}; ''").unwrap_err();
         assert_eq!(e.exit_code(), 4);
@@ -308,6 +317,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(cairn_pele_stub))]
     fn runaway_allocation_hits_the_memory_limit_and_engine_recovers() {
         let e = run_js("let a = []; while (true) { a.push(new Array(100000).fill(1)); } ''")
             .unwrap_err();
@@ -316,6 +326,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(cairn_pele_stub))]
     fn deep_recursion_hits_the_stack_limit() {
         let e = run_js("function f(){ return f() + 1 } String(f())").unwrap_err();
         assert_eq!(e.exit_code(), 4);
@@ -363,6 +374,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(cairn_pele_stub))]
     fn engine_is_started_once_per_thread() {
         std::thread::spawn(|| {
             let before = engine_starts();
@@ -375,5 +387,12 @@ mod tests {
         })
         .join()
         .unwrap();
+    }
+
+    #[test]
+    #[cfg(cairn_pele_stub)]
+    fn stubbed_build_reports_mermaid_unavailable() {
+        let e = validate(Format::Mermaid, b"flowchart LR\n A --> B\n").unwrap_err();
+        assert!(e.to_string().contains("built without PELE_JS"), "{e}");
     }
 }
