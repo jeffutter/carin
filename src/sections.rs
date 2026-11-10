@@ -293,8 +293,9 @@ pub fn extract<'a>(src: &'a str, query: &str) -> Result<&'a str, Error> {
 }
 
 /// Replace one Section with `replacement`, which must begin with a heading
-/// line of the same level as the replaced one, and contain no heading
-/// shallower than it. The result must also keep the headings after the
+/// line of the same level as the replaced one, and contain no further
+/// heading of that level or shallower (which would add sibling Sections or
+/// close the replaced one early). The result must also keep the headings after the
 /// Section unchanged, which rejects an unclosed code fence swallowing the
 /// tail. Text outside the Section is untouched.
 pub fn splice(src: &str, query: &str, replacement: &str) -> Result<String, Error> {
@@ -306,13 +307,16 @@ pub fn splice(src: &str, query: &str, replacement: &str) -> Result<String, Error
         ));
     }
     let new_hs = parse(replacement);
-    if let Some(bad) = new_hs
-        .iter()
-        .find(|r| r.level != h.level && (r.start == 0 || r.level < h.level))
-    {
+    if let Some(bad) = new_hs.iter().find(|r| {
+        if r.start == 0 {
+            r.level != h.level
+        } else {
+            r.level <= h.level
+        }
+    }) {
         return Err(Error::Rejected(format!(
-            "a section replacement must start with a level-{} heading and contain none shallower; found level {}",
-            h.level, bad.level
+            "a section replacement must start with a level-{} heading and contain no further heading of level {} or shallower; found level {}",
+            h.level, h.level, bad.level
         )));
     }
     let old = &src[h.start..h.end];
@@ -379,6 +383,16 @@ mod tests {
         assert!(splice(DOC, "A", "## A\nx\n# Up\ny\n").is_err());
         assert!(splice(DOC, "A", "## A\nx\n").is_ok());
         assert!(splice(DOC, "A", "## A\nx\n#### deep\ny\n").is_ok());
+        assert!(splice(DOC, "A", "## A\nx\n### deeper\ny\n").is_ok());
+    }
+
+    #[test]
+    fn splice_rejects_same_level_sibling_injection() {
+        assert!(splice(DOC, "A", "## A\nx\n## B\ny\n").is_err());
+        assert!(splice(DOC, "A", "## A\nx\n## A\n").is_err());
+        assert!(splice(DOC, "A > A1", "### A1\nx\n### A3\ny\n").is_err());
+        assert!(splice(DOC, "A > A1", "### A1\nx\n## Up\ny\n").is_err());
+        assert!(splice(DOC, "A > A1", "### A1\nx\n#### deep\ny\n").is_ok());
     }
 
     #[test]
