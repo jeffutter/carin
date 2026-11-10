@@ -7,6 +7,7 @@ pub mod error;
 pub mod ids;
 pub mod kind;
 pub mod limits;
+pub mod scope;
 pub mod sections;
 
 use std::io::{Read, Write};
@@ -41,6 +42,12 @@ fn read_body(body: &str) -> Result<String, Error> {
     String::from_utf8(buf).map_err(|_| Error::Usage("comment body is not valid UTF-8".into()))
 }
 
+fn selection(ctx: &Context) -> scope::Selection {
+    // An unreadable cwd just means nothing to detect.
+    let cwd = std::env::current_dir().unwrap_or_default();
+    scope::select(ctx.project.as_deref(), &cwd)
+}
+
 /// Run a command; the Ok value is the exit code (0, or 5 for a wait timeout).
 pub fn run(command: Command, ctx: &Context) -> Result<u8, Error> {
     if let Command::Comment { action } = command {
@@ -73,8 +80,18 @@ pub fn run(command: Command, ctx: &Context) -> Result<u8, Error> {
             };
             let bytes = read_input(&path)?;
             limits::check_file(bytes.len() as u64)?;
+            let scope = scope::for_write(selection(ctx)).map_err(Error::Usage)?;
             let mut conn = db::open(&ctx.db_path)?;
-            let r = artifact::submit(&mut conn, ctx, artifact::SubmitInput { name, kind, bytes })?;
+            let r = artifact::submit(
+                &mut conn,
+                ctx,
+                artifact::SubmitInput {
+                    name,
+                    kind,
+                    bytes,
+                    scope,
+                },
+            )?;
             println!("{}", serde_json::to_string(&r).expect("ref serializes"));
             Ok(0)
         }
@@ -108,6 +125,9 @@ pub fn run(command: Command, ctx: &Context) -> Result<u8, Error> {
             older_than,
             limit,
             text,
+            all_projects,
+            all_worktrees,
+            project_root,
         } => {
             let older_than_secs = older_than
                 .as_deref()
@@ -128,6 +148,12 @@ pub fn run(command: Command, ctx: &Context) -> Result<u8, Error> {
                 open,
                 older_than_secs,
                 limit,
+                scope: scope::ScopeFilter::build(
+                    &selection(ctx),
+                    all_projects,
+                    all_worktrees,
+                    project_root.as_deref(),
+                ),
             };
             let conn = db::open(&ctx.db_path)?;
             let rows = artifact::list(&conn, &filter)?;
@@ -221,6 +247,9 @@ fn run_comment(action: CommentAction, ctx: &Context) -> Result<u8, Error> {
             wait,
             timeout,
             text,
+            all_projects,
+            all_worktrees,
+            project_root,
         } => {
             if let Some(t) = &target
                 && t.contains('@')
@@ -234,6 +263,12 @@ fn run_comment(action: CommentAction, ctx: &Context) -> Result<u8, Error> {
                 artifact: target,
                 all,
                 since,
+                scope: scope::ScopeFilter::build(
+                    &selection(ctx),
+                    all_projects,
+                    all_worktrees,
+                    project_root.as_deref(),
+                ),
             };
             let (r, exit) = if wait {
                 match comments::wait(&conn, ctx, &q, std::time::Duration::from_secs(timeout))? {

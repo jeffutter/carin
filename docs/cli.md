@@ -26,7 +26,7 @@ Role is attribution only: both roles may run every command, including `delete`.
 
 ### Scoping
 
-`--project` takes a root path (value starts with `/`, replaces the detected root; the name comes from its last segment) or a name. A name is accepted on reads as a filter and rejected on writes. `none` or an empty value disables detection for the call. There is no worktree override; the worktree comes from the cwd. Detection and defaults are in [data-model.md](data-model.md#project-and-worktree-scope). `list` and `comment list` also take `--all-projects`, `--all-worktrees` and `--project-root <path>` (narrows when a name maps to several roots).
+`--project` takes a root path (value starts with `/`, replaces the detected root; the name comes from its last segment) or a name. A name is accepted on reads as a filter and rejected on writes (`submit` exits 2). `none` or an empty value disables detection for the call. There is no worktree override; the worktree comes from the cwd. Detection and defaults are in [data-model.md](data-model.md#project-and-worktree-scope). `list` and `comment list` also take `--all-projects`, `--all-worktrees` and `--project-root <path>` (narrows when a name maps to several roots; conflicts with `--all-projects`). `--all-projects` does not widen the worktree rule: other Projects' linked-worktree Artifacts stay hidden unless `--all-worktrees` is also given.
 
 ## Output contract
 

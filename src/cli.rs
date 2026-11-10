@@ -117,6 +117,15 @@ pub enum Command {
         /// Print a table instead of JSON
         #[arg(long)]
         text: bool,
+        /// Show Artifacts of every Project
+        #[arg(long, conflicts_with = "project_root")]
+        all_projects: bool,
+        /// Also show Artifacts of every linked worktree of the Project
+        #[arg(long)]
+        all_worktrees: bool,
+        /// Only the Project with this root path (narrows a name shared by several)
+        #[arg(long, value_name = "PATH")]
+        project_root: Option<String>,
     },
     /// Comments and Threads
     Comment {
@@ -193,6 +202,15 @@ pub enum CommentAction {
         /// Print a table instead of JSON
         #[arg(long)]
         text: bool,
+        /// Show Artifacts of every Project
+        #[arg(long, conflicts_with = "project_root")]
+        all_projects: bool,
+        /// Also show Artifacts of every linked worktree of the Project
+        #[arg(long)]
+        all_worktrees: bool,
+        /// Only the Project with this root path (narrows a name shared by several)
+        #[arg(long, value_name = "PATH")]
+        project_root: Option<String>,
     },
 }
 

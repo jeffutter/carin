@@ -14,6 +14,7 @@ use crate::cli::Context;
 use crate::db::{db_err, write_tx};
 use crate::error::Error;
 use crate::limits;
+use crate::scope::ScopeFilter;
 use crate::sections;
 
 /// Where a root Comment points inside its Revision.
@@ -93,6 +94,8 @@ pub struct ListQuery {
     pub all: bool,
     /// Only Threads holding a Comment with a larger id.
     pub since: Option<i64>,
+    /// Project scope, used only when neither an Artifact nor a Session is explicit.
+    pub scope: ScopeFilter,
 }
 
 /// Highest Comment id ever issued, read from the AUTOINCREMENT counter so
@@ -320,6 +323,7 @@ pub fn wait(
         artifact: q.artifact.clone(),
         all: q.all,
         since: Some(baseline),
+        scope: q.scope.clone(),
     };
     let mut current = list(conn, ctx, &newer)?;
     loop {
@@ -454,7 +458,7 @@ pub fn set_status(
 /// scope is ignored; otherwise an explicit `--session` limits to Artifacts any
 /// Revision of which was made in it (so a Session keeps its Threads after
 /// another Session edits), and with no explicit Session (the env fallback never
-/// filters) every Artifact is in scope (project scoping arrives with TASK-8).
+/// filters) the Project scope of `q.scope` applies, the same as `list`.
 pub fn list(conn: &Connection, ctx: &Context, q: &ListQuery) -> Result<CommentList, Error> {
     // One snapshot so highest_comment_id covers everything the list shows.
     let tx = conn.unchecked_transaction().map_err(db_err)?;
@@ -467,16 +471,28 @@ pub fn list(conn: &Connection, ctx: &Context, q: &ListQuery) -> Result<CommentLi
     } else {
         ctx.session_explicit.clone()
     };
-    let threads = load_threads(
-        &tx,
+    // An explicit Artifact or Session ignores the Project.
+    let scope = if session.is_some() || q.artifact.is_some() {
+        ScopeFilter::unscoped()
+    } else {
+        q.scope.clone()
+    };
+    let [sn, sr, sa, sw] = scope.params();
+    let filter = format!(
         "AND (?1 IS NULL OR c.artifact_id = ?1)
          AND (?2 IS NULL OR EXISTS (SELECT 1 FROM revisions r
               WHERE r.artifact_id = c.artifact_id
                 AND r.session = ?2))
          AND (?3 = 1 OR c.status = 'open')
          AND (?4 IS NULL OR c.id > ?4
-              OR EXISTS (SELECT 1 FROM comments x WHERE x.parent_id = c.id AND x.id > ?4))",
-        params![q.artifact, session, q.all as i64, q.since],
+              OR EXISTS (SELECT 1 FROM comments x WHERE x.parent_id = c.id AND x.id > ?4))
+         AND EXISTS (SELECT 1 FROM artifacts a WHERE a.id = c.artifact_id AND {})",
+        scope.sql("a", 5)
+    );
+    let threads = load_threads(
+        &tx,
+        &filter,
+        params![q.artifact, session, q.all as i64, q.since, sn, sr, sa, sw],
     )?;
     Ok(CommentList {
         threads,

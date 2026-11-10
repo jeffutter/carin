@@ -32,9 +32,15 @@ mod roundtrip {
             "CAIRN_SESSION",
             "CLAUDE_CODE_SESSION_ID",
             "CAIRN_DB",
+            "CAIRN_PROJECT",
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_INDEX_FILE",
         ] {
             c.env_remove(v);
         }
+        // Not inside any repo, so detection finds no scope.
+        c.current_dir(std::env::temp_dir());
         c.arg("--db").arg(db);
         c
     }
@@ -421,9 +427,15 @@ mod list_delete {
             "CAIRN_SESSION",
             "CLAUDE_CODE_SESSION_ID",
             "CAIRN_DB",
+            "CAIRN_PROJECT",
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_INDEX_FILE",
         ] {
             c.env_remove(v);
         }
+        // Not inside any repo, so detection finds no scope.
+        c.current_dir(std::env::temp_dir());
         c.arg("--db").arg(db);
         c
     }
@@ -775,9 +787,15 @@ mod sections {
             "CAIRN_SESSION",
             "CLAUDE_CODE_SESSION_ID",
             "CAIRN_DB",
+            "CAIRN_PROJECT",
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_INDEX_FILE",
         ] {
             c.env_remove(v);
         }
+        // Not inside any repo, so detection finds no scope.
+        c.current_dir(std::env::temp_dir());
         c.arg("--db").arg(db);
         c
     }
@@ -964,9 +982,15 @@ mod comments {
             "CAIRN_SESSION",
             "CLAUDE_CODE_SESSION_ID",
             "CAIRN_DB",
+            "CAIRN_PROJECT",
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_INDEX_FILE",
         ] {
             c.env_remove(v);
         }
+        // Not inside any repo, so detection finds no scope.
+        c.current_dir(std::env::temp_dir());
         c.arg("--db").arg(db);
         c
     }
@@ -1536,5 +1560,413 @@ mod comments {
                     == 1
             );
         }
+    }
+}
+
+mod scoping {
+    use super::cairn;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+
+    fn git(dir: &Path, args: &[&str]) {
+        let out = Command::new("git")
+            .current_dir(dir)
+            .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
+            .args([
+                "-c",
+                "protocol.file.allow=always",
+                "-c",
+                "init.defaultBranch=main",
+            ])
+            .args(["-c", "commit.gpgsign=false"])
+            .args(args)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// A temp dir with a canonical path (rev-parse reports canonical paths).
+    fn tmp() -> (tempfile::TempDir, PathBuf) {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().canonicalize().unwrap();
+        (d, p)
+    }
+
+    /// A repo with one commit at `<parent>/<name>`.
+    fn repo(parent: &Path, name: &str) -> PathBuf {
+        let p = parent.join(name);
+        std::fs::create_dir_all(&p).unwrap();
+        git(&p, &["init", "-q"]);
+        git(&p, &["commit", "-q", "--allow-empty", "-m", "init"]);
+        p
+    }
+
+    fn worktree(root: &Path, path: &Path) {
+        git(root, &["worktree", "add", "-q", path.to_str().unwrap()]);
+    }
+
+    fn cmd(db: &Path, cwd: &Path) -> Command {
+        let mut c = cairn();
+        for v in [
+            "CAIRN_ROLE",
+            "CAIRN_AGENT",
+            "CAIRN_SESSION",
+            "CLAUDE_CODE_SESSION_ID",
+            "CAIRN_DB",
+            "CAIRN_PROJECT",
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_INDEX_FILE",
+        ] {
+            c.env_remove(v);
+        }
+        c.arg("--db").arg(db).current_dir(cwd);
+        c
+    }
+
+    fn run(db: &Path, cwd: &Path, args: &[&str]) -> std::process::Output {
+        cmd(db, cwd).args(args).output().unwrap()
+    }
+
+    fn ok(db: &Path, cwd: &Path, args: &[&str]) -> serde_json::Value {
+        let o = run(db, cwd, args);
+        assert_eq!(
+            o.status.code(),
+            Some(0),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        serde_json::from_slice(&o.stdout).unwrap()
+    }
+
+    /// Submit a one-line doc named `name` from `cwd`; returns its id.
+    fn submit(db: &Path, cwd: &Path, name: &str, extra: &[&str]) -> String {
+        let file = db.parent().unwrap().join(format!("{name}.md"));
+        std::fs::write(&file, "# T\n\nbody\n").unwrap();
+        let mut args = vec!["submit", file.to_str().unwrap()];
+        args.extend_from_slice(extra);
+        ok(db, cwd, &args)["id"].as_str().unwrap().to_string()
+    }
+
+    fn names(v: &serde_json::Value) -> Vec<String> {
+        let mut n: Vec<String> = v["artifacts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["name"].as_str().unwrap().to_string())
+            .collect();
+        n.sort();
+        n
+    }
+
+    fn list(db: &Path, cwd: &Path, extra: &[&str]) -> Vec<String> {
+        let mut args = vec!["list"];
+        args.extend_from_slice(extra);
+        names(&ok(db, cwd, &args))
+    }
+
+    #[test]
+    fn submit_stores_name_root_and_worktree() {
+        let (_g, t) = tmp();
+        let db = t.join("c.db");
+        let root = repo(&t, "proj");
+        let wt = t.join("wt1");
+        worktree(&root, &wt);
+
+        submit(&db, &root, "in-root", &[]);
+        submit(&db, &wt, "in-wt", &[]);
+
+        let v = ok(&db, &root, &["list", "--all-worktrees"]);
+        let rows = v["artifacts"].as_array().unwrap();
+        let find = |n: &str| {
+            rows.iter()
+                .find(|r| r["name"] == format!("{n}.md"))
+                .unwrap()
+        };
+        let r = find("in-root");
+        assert_eq!(r["project"], "proj");
+        assert_eq!(r["project_root"], root.to_str().unwrap());
+        assert!(r["worktree"].is_null());
+        let w = find("in-wt");
+        assert_eq!(w["project"], "proj");
+        assert_eq!(w["project_root"], root.to_str().unwrap());
+        assert_eq!(w["worktree"], wt.to_str().unwrap());
+    }
+
+    #[test]
+    fn default_scope_excludes_sibling_worktrees_and_flags_widen() {
+        let (_g, t) = tmp();
+        let db = t.join("c.db");
+        let root = repo(&t, "proj");
+        let (wa, wb) = (t.join("wa"), t.join("wb"));
+        worktree(&root, &wa);
+        worktree(&root, &wb);
+        let other = repo(&t, "other");
+
+        submit(&db, &root, "r", &[]);
+        submit(&db, &wa, "a", &[]);
+        submit(&db, &wb, "b", &[]);
+        submit(&db, &other, "o", &[]);
+
+        // Root checkout: root Artifacts only.
+        assert_eq!(list(&db, &root, &[]), ["r.md"]);
+        // A linked worktree: root plus its own.
+        assert_eq!(list(&db, &wa, &[]), ["a.md", "r.md"]);
+        assert_eq!(list(&db, &wb, &[]), ["b.md", "r.md"]);
+        // --all-worktrees: every worktree of this Project, not other Projects.
+        assert_eq!(
+            list(&db, &root, &["--all-worktrees"]),
+            ["a.md", "b.md", "r.md"]
+        );
+        // --all-projects: other Projects, still strict on worktrees.
+        assert_eq!(list(&db, &root, &["--all-projects"]), ["o.md", "r.md"]);
+        assert_eq!(
+            list(&db, &root, &["--all-projects", "--all-worktrees"]),
+            ["a.md", "b.md", "o.md", "r.md"]
+        );
+        // Outside any repo nothing is filtered.
+        assert_eq!(list(&db, &t, &[]).len(), 4);
+        // The two widening/narrowing project flags conflict.
+        let o = run(
+            &db,
+            &root,
+            &["list", "--all-projects", "--project-root", "/x"],
+        );
+        assert_eq!(o.status.code(), Some(2));
+    }
+
+    #[test]
+    fn name_matching_several_roots_is_narrowed_by_project_root() {
+        let (_g, t) = tmp();
+        let db = t.join("c.db");
+        let one = repo(&t.join("x"), "same");
+        let two = repo(&t.join("y"), "same");
+        submit(&db, &one, "one", &[]);
+        submit(&db, &two, "two", &[]);
+
+        // From outside any repo, a name reads every Project of that name.
+        assert_eq!(list(&db, &t, &["--project", "same"]), ["one.md", "two.md"]);
+        assert_eq!(
+            list(
+                &db,
+                &t,
+                &["--project", "same", "--project-root", one.to_str().unwrap()]
+            ),
+            ["one.md"]
+        );
+        // A detected scope narrows too.
+        assert_eq!(
+            list(&db, &two, &["--project-root", one.to_str().unwrap()]),
+            ["one.md"]
+        );
+        assert_eq!(list(&db, &t, &["--project", "nothing"]).len(), 0);
+    }
+
+    #[test]
+    fn name_on_write_is_rejected_and_path_replaces_the_root() {
+        let (_g, t) = tmp();
+        let db = t.join("c.db");
+        let root = repo(&t, "proj");
+        let f = t.join("d.md");
+        std::fs::write(&f, "# T\n").unwrap();
+
+        let o = run(
+            &db,
+            &root,
+            &["--project", "proj", "submit", f.to_str().unwrap()],
+        );
+        assert_eq!(o.status.code(), Some(2));
+
+        let target = t.join("elsewhere");
+        std::fs::create_dir(&target).unwrap();
+        let o = run(
+            &db,
+            &root,
+            &[
+                "--project",
+                target.to_str().unwrap(),
+                "submit",
+                f.to_str().unwrap(),
+            ],
+        );
+        assert_eq!(o.status.code(), Some(0));
+        let v = ok(&db, &t, &["list", "--project", "none", "--all-worktrees"]);
+        let row = &v["artifacts"][0];
+        assert_eq!(row["project"], "elsewhere");
+        assert_eq!(row["project_root"], target.to_str().unwrap());
+        // Reading that root back finds it, from anywhere.
+        assert_eq!(
+            list(&db, &t, &["--project", target.to_str().unwrap()]),
+            ["d.md"]
+        );
+        // "none" and the empty string disable detection on a write.
+        for off in ["none", ""] {
+            let o = run(
+                &db,
+                &root,
+                &["--project", off, "submit", f.to_str().unwrap()],
+            );
+            assert_eq!(o.status.code(), Some(0));
+        }
+        let v = ok(&db, &t, &["list", "--all-worktrees"]);
+        let nulls = v["artifacts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|a| a["project"].is_null())
+            .count();
+        assert_eq!(nulls, 2);
+    }
+
+    #[test]
+    fn no_repo_missing_git_bare_repo_and_submodule() {
+        let (_g, t) = tmp();
+        let db = t.join("c.db");
+        let plain = t.join("plain");
+        std::fs::create_dir(&plain).unwrap();
+
+        // No repo: succeeds, no scope.
+        submit(&db, &plain, "plain", &[]);
+        let v = ok(&db, &plain, &["list"]);
+        assert!(v["artifacts"][0]["project"].is_null());
+
+        // git missing from PATH.
+        let empty = t.join("emptybin");
+        std::fs::create_dir(&empty).unwrap();
+        let root = repo(&t, "proj");
+        let f = t.join("g.md");
+        std::fs::write(&f, "# T\n").unwrap();
+        let o = cmd(&db, &root)
+            .env("PATH", &empty)
+            .args(["submit", f.to_str().unwrap()])
+            .output()
+            .unwrap();
+        assert_eq!(
+            o.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        let o = cmd(&db, &root)
+            .env("PATH", &empty)
+            .arg("list")
+            .output()
+            .unwrap();
+        assert_eq!(o.status.code(), Some(0));
+
+        // Bare repo: no scope, no error.
+        let bare = t.join("bare.git");
+        std::fs::create_dir(&bare).unwrap();
+        git(&bare, &["init", "-q", "--bare"]);
+        let id = submit(&db, &bare, "inbare", &[]);
+        let v = ok(&db, &bare, &["list"]);
+        assert!(
+            v["artifacts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|a| a["id"] == id.as_str() && a["project"].is_null())
+        );
+
+        // A submodule is its own Project.
+        let lib = repo(&t, "lib");
+        let sup = repo(&t, "super");
+        git(
+            &sup,
+            &["submodule", "add", "-q", lib.to_str().unwrap(), "lib"],
+        );
+        let sub = sup.join("lib");
+        submit(&db, &sub, "insub", &[]);
+        let v = ok(&db, &sub, &["list"]);
+        let row = &v["artifacts"][0];
+        assert_eq!(row["name"], "insub.md");
+        assert_eq!(row["project"], "lib");
+        assert_eq!(row["project_root"], sub.to_str().unwrap());
+        assert!(row["worktree"].is_null());
+    }
+
+    #[test]
+    fn comment_list_scope() {
+        let (_g, t) = tmp();
+        let db = t.join("c.db");
+        let root = repo(&t, "proj");
+        let wt = t.join("wt");
+        worktree(&root, &wt);
+        let other = repo(&t, "other");
+
+        let a = submit(&db, &root, "r", &["--session", "s1"]);
+        let b = submit(&db, &wt, "w", &["--session", "s2"]);
+        let c = submit(&db, &other, "o", &["--session", "s3"]);
+        for id in [&a, &b, &c] {
+            ok(&db, &t, &["comment", "add", id, "hello"]);
+        }
+        let ids = |v: &serde_json::Value| -> Vec<String> {
+            let mut n: Vec<String> = v["threads"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|x| x["artifact_id"].as_str().unwrap().to_string())
+                .collect();
+            n.sort();
+            n
+        };
+        let sorted = |mut v: Vec<String>| {
+            v.sort();
+            v
+        };
+        // No session: the same scope as `list`.
+        assert_eq!(
+            ids(&ok(&db, &root, &["comment", "list"])),
+            std::slice::from_ref(&a)
+        );
+        assert_eq!(
+            ids(&ok(&db, &wt, &["comment", "list"])),
+            sorted(vec![a.clone(), b.clone()])
+        );
+        assert_eq!(
+            ids(&ok(&db, &root, &["comment", "list", "--all-worktrees"])),
+            sorted(vec![a.clone(), b.clone()])
+        );
+        assert_eq!(
+            ids(&ok(&db, &root, &["comment", "list", "--all-projects"])),
+            sorted(vec![a.clone(), c.clone()])
+        );
+        // An explicit Session ignores the Project.
+        assert_eq!(
+            ids(&ok(&db, &root, &["--session", "s3", "comment", "list"])),
+            std::slice::from_ref(&c)
+        );
+        // So does an explicit Artifact.
+        assert_eq!(ids(&ok(&db, &root, &["comment", "list", &c])), [c]);
+    }
+
+    #[test]
+    fn list_text_has_project_and_worktree_columns() {
+        let (_g, t) = tmp();
+        let db = t.join("c.db");
+        let root = repo(&t, "proj");
+        let wt = t.join("wt");
+        worktree(&root, &wt);
+        submit(&db, &wt, "w", &[]);
+        let o = run(&db, &wt, &["list", "--text"]);
+        let text = String::from_utf8(o.stdout).unwrap();
+        let mut lines = text.lines();
+        let header = lines.next().unwrap();
+        assert!(
+            header.contains("PROJECT") && header.contains("WORKTREE"),
+            "{header}"
+        );
+        let row = lines.next().unwrap();
+        assert!(
+            row.contains("proj") && row.contains(wt.to_str().unwrap()),
+            "{row}"
+        );
     }
 }

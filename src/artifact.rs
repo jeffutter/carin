@@ -13,12 +13,14 @@ use crate::error::Error;
 use crate::ids::new_artifact_id;
 use crate::kind::Kind;
 use crate::limits;
+use crate::scope::{Scope, ScopeFilter};
 use crate::sections;
 
 pub struct SubmitInput {
     pub name: String,
     pub kind: Kind,
     pub bytes: Vec<u8>,
+    pub scope: Option<Scope>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,9 +75,16 @@ pub fn submit(conn: &mut Connection, ctx: &Context, input: SubmitInput) -> Resul
             let candidate = new_artifact_id()?;
             let n = tx
                 .execute(
-                    "INSERT OR IGNORE INTO artifacts (id, kind, name, created_at, updated_at)
-                     VALUES (?1, ?2, ?3, strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
-                    params![candidate, input.kind.as_str(), input.name],
+                    "INSERT OR IGNORE INTO artifacts (id, kind, name, project_name, project_root, worktree, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+                    params![
+                        candidate,
+                        input.kind.as_str(),
+                        input.name,
+                        input.scope.as_ref().map(|s| &s.name),
+                        input.scope.as_ref().map(|s| &s.root),
+                        input.scope.as_ref().and_then(|s| s.worktree.as_ref())
+                    ],
                 )
                 .map_err(db_err)?;
             if n == 1 {
@@ -288,6 +297,7 @@ pub struct ListFilter {
     /// Only Artifacts last updated more than this many seconds ago.
     pub older_than_secs: Option<i64>,
     pub limit: i64,
+    pub scope: ScopeFilter,
 }
 
 #[derive(Debug, Serialize)]
@@ -303,18 +313,20 @@ pub struct ListRow {
     pub bytes: i64,
     pub updated_at: String,
     pub project: Option<String>,
+    pub project_root: Option<String>,
     pub worktree: Option<String>,
 }
 
 /// Artifacts, newest activity first.
 pub fn list(conn: &Connection, f: &ListFilter) -> Result<Vec<ListRow>, Error> {
-    let sql = "SELECT a.id, a.kind, a.name,
+    let sql = format!(
+        "SELECT a.id, a.kind, a.name,
                 (SELECT MAX(number) FROM revisions WHERE artifact_id = a.id),
                 (SELECT COUNT(*) FROM comments c WHERE c.artifact_id = a.id AND c.parent_id IS NULL AND c.status = 'open'),
                 (SELECT author FROM revisions WHERE artifact_id = a.id ORDER BY number DESC LIMIT 1),
                 COALESCE((SELECT SUM(LENGTH(b.bytes)) FROM blobs b WHERE b.sha256 IN
                     (SELECT sha256 FROM revision_files WHERE artifact_id = a.id)), 0),
-                a.updated_at, a.project_name, a.worktree
+                a.updated_at, a.project_name, a.worktree, a.project_root
          FROM artifacts a
          WHERE (?1 IS NULL OR a.kind = ?1)
            AND (?2 IS NULL OR EXISTS (SELECT 1 FROM revisions r
@@ -324,10 +336,14 @@ pub fn list(conn: &Connection, f: &ListFilter) -> Result<Vec<ListRow>, Error> {
            AND (?4 IS NULL OR a.updated_at < strftime('%Y-%m-%dT%H:%M:%fZ','now', ?4))
            AND (?6 = 0 OR EXISTS (SELECT 1 FROM comments c
                  WHERE c.artifact_id = a.id AND c.parent_id IS NULL AND c.status = 'open'))
+           AND {scope}
          ORDER BY a.updated_at DESC, a.id DESC
-         LIMIT ?5";
+         LIMIT ?5",
+        scope = f.scope.sql("a", 7)
+    );
     let older = f.older_than_secs.map(|n| format!("-{n} seconds"));
-    let mut stmt = conn.prepare(sql).map_err(db_err)?;
+    let mut stmt = conn.prepare(&sql).map_err(db_err)?;
+    let [sn, sr, sa, sw] = f.scope.params();
     let rows = stmt
         .query_map(
             params![
@@ -336,7 +352,11 @@ pub fn list(conn: &Connection, f: &ListFilter) -> Result<Vec<ListRow>, Error> {
                 f.author,
                 older,
                 f.limit,
-                f.open as i64
+                f.open as i64,
+                sn,
+                sr,
+                sa,
+                sw
             ],
             |r| {
                 Ok(ListRow {
@@ -350,6 +370,7 @@ pub fn list(conn: &Connection, f: &ListFilter) -> Result<Vec<ListRow>, Error> {
                     updated_at: r.get(7)?,
                     project: r.get(8)?,
                     worktree: r.get(9)?,
+                    project_root: r.get(10)?,
                 })
             },
         )
