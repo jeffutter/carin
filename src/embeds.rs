@@ -17,7 +17,7 @@ use crate::artifact::parse_target;
 use crate::db::db_err;
 use crate::error::Error;
 
-const SCHEME: &str = "cairn:";
+pub(crate) const SCHEME: &str = "cairn:";
 
 /// One reference found in markdown text, in document order.
 #[derive(Debug, Clone, PartialEq, Eq)]

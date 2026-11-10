@@ -7,6 +7,7 @@
 //! drops raw HTML and unsafe link schemes. The page CSP ([`csp`]) is the
 //! second line of defence; it forbids inline script and style.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
@@ -17,8 +18,9 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use maud::{DOCTYPE, Markup, PreEscaped, html};
+use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
@@ -26,6 +28,7 @@ use crate::artifact::{self, ListFilter, ListRow};
 use crate::cli::{Context, Role};
 use crate::comments;
 use crate::db::{self, db_err};
+use crate::embeds;
 use crate::error::Error;
 use crate::kind::Kind;
 use crate::scope::{ScopeFilter, Selection};
@@ -64,12 +67,21 @@ pub(crate) fn csp(content_port: u16) -> HeaderValue {
 pub(crate) struct UiState {
     pub db_path: PathBuf,
     pub reviewer: String,
+    /// Port of the untrusted content listener, where frames and images load from.
+    pub content_port: u16,
+}
+
+impl UiState {
+    fn origin(&self) -> String {
+        format!("http://127.0.0.1:{}", self.content_port)
+    }
 }
 
 pub(crate) fn router(state: UiState) -> Router {
     Router::new()
         .route("/", get(list_page))
         .route("/a/{idrev}", get(artifact_page))
+        .route("/a/{idrev}/delete", post(delete_artifact))
         .route("/a/{idrev}/live", get(live_fragment))
         .route("/a/{idrev}/compose", get(compose))
         .route("/a/{idrev}/threads", post(new_thread))
@@ -173,6 +185,84 @@ fn layout(s: &UiState, title: &str, body: Markup) -> Markup {
     }
 }
 
+// --- content URLs and embeds ---------------------------------------------------------
+
+/// Everything except unreserved characters is escaped, so a Bundle path can
+/// neither break out of the URL nor add a query or fragment.
+const PATH_SEGMENT: &AsciiSet = &NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'_')
+    .remove(b'~');
+
+fn content_url(origin: &str, id: &str, rev: i64, path: &str) -> String {
+    let enc = |s: &str| utf8_percent_encode(s, PATH_SEGMENT).to_string();
+    let path: Vec<String> = path.split('/').map(enc).collect();
+    format!("{origin}/a/{}/{rev}/{}", enc(id), path.join("/"))
+}
+
+/// The Kind and the content-port path that shows Revision `rev`: the entry
+/// page of a Bundle, the rendered SVG of a Mermaid diagram, else the one file.
+fn content_path(conn: &Connection, id: &str, rev: i64) -> Result<Option<(Kind, String)>, Error> {
+    let head: Option<(String, Option<String>)> = conn
+        .query_row(
+            "SELECT kind, format FROM artifacts WHERE id = ?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(db_err)?;
+    let Some((kind, format)) = head else {
+        return Ok(None);
+    };
+    let kind = Kind::parse(&kind)?;
+    let path = match (kind, format.as_deref()) {
+        (Kind::Html, _) => Some("index.html".to_string()),
+        (Kind::Diagram, Some("mermaid")) => Some("diagram.svg".to_string()),
+        _ => conn
+            .query_row(
+                "SELECT path FROM revision_files WHERE artifact_id = ?1 AND revision = ?2
+                 ORDER BY path LIMIT 1",
+                params![id, rev],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(db_err)?,
+    };
+    Ok(path.map(|p| (kind, p)))
+}
+
+/// Resolve each `cairn:` image of `text`: `id@n` to that Revision, `id` to the
+/// target's current latest. The target must exist and be an image or diagram.
+fn resolve_embeds(conn: &Connection, origin: &str, text: &str) -> Result<Embeds, Error> {
+    let mut out = Embeds::new();
+    for ev in Parser::new_ext(text, md_options()) {
+        let Event::Start(Tag::Image { dest_url, .. }) = ev else {
+            continue;
+        };
+        let Some(rest) = dest_url.strip_prefix(embeds::SCHEME) else {
+            continue;
+        };
+        if out.contains_key(dest_url.as_ref()) {
+            continue;
+        }
+        let url = match artifact::parse_target(rest) {
+            Ok((id, rev)) => match viewing_rev(conn, &id, rev)? {
+                Some(n) => match content_path(conn, &id, n)? {
+                    Some((Kind::Image | Kind::Diagram, path)) => {
+                        Some(content_url(origin, &id, n, &path))
+                    }
+                    _ => None,
+                },
+                None => None,
+            },
+            Err(_) => None,
+        };
+        out.insert(dest_url.to_string(), url);
+    }
+    Ok(out)
+}
+
 // --- list ---------------------------------------------------------------------
 
 #[derive(Deserialize, Default)]
@@ -250,6 +340,7 @@ fn table(rows: &[ListRow]) -> Markup {
                     thead { tr {
                         th { "Name" } th { "Kind" } th { "Project" } th.num { "Revision" }
                         th.num { "Open Threads" } th.num { "Size" } th { "Updated" }
+                        th { "" }
                     } }
                     tbody {
                         @for r in rows {
@@ -267,6 +358,14 @@ fn table(rows: &[ListRow]) -> Markup {
                                 }
                                 td.num { (human_bytes(r.bytes)) }
                                 td { (short_time(&r.updated_at)) }
+                                td {
+                                    button.del type="button" hx-post={ "/a/" (r.id) "/delete" }
+                                        hx-include=".filters" hx-target="#artifacts"
+                                        hx-swap="outerHTML"
+                                        hx-confirm={ "Delete " (r.name) " and all its Revisions?" } {
+                                        "Delete"
+                                    }
+                                }
                             }
                         }
                     }
@@ -334,6 +433,41 @@ async fn list_page(
     res
 }
 
+/// Delete an Artifact from the list and answer with the redrawn table under
+/// the filters the form carried. An Artifact already gone counts as deleted.
+async fn delete_artifact(
+    State(s): State<UiState>,
+    UrlPath(idrev): UrlPath<String>,
+    headers: HeaderMap,
+    Form(p): Form<ListParams>,
+) -> Response {
+    if let Err(e) = check_post(&headers) {
+        return e.into_response();
+    }
+    let (id, _) = match target(&idrev) {
+        Ok(t) => t,
+        Err(e) => return e.into_response(),
+    };
+    let project = non_empty(p.project);
+    let kind = match non_empty(p.kind).as_deref().map(Kind::parse) {
+        None => None,
+        Some(Ok(k)) => Some(k),
+        Some(Err(_)) => return plain(StatusCode::BAD_REQUEST, "bad kind"),
+    };
+    let view = blocking(&s.db_path, move |c| {
+        match artifact::delete(c, &[id]) {
+            Ok(_) | Err(Error::NotFound(_)) => {}
+            Err(e) => return Err(e),
+        }
+        list_view(c, project.as_deref(), kind).map(Some)
+    })
+    .await;
+    match view {
+        Ok(v) => html_response(table(&v.rows)),
+        Err(e) => e.into_response(),
+    }
+}
+
 // --- Artifact page --------------------------------------------------------------
 
 struct RevInfo {
@@ -353,7 +487,9 @@ enum Body {
         doc: Markup,
         outline: Vec<OutlineItem>,
     },
-    Other,
+    /// Every other Kind: the frame (drawn outside the polled region) and the
+    /// whole-Revision Threads.
+    Whole { frame: Markup, threads: Markup },
 }
 
 struct Page {
@@ -445,6 +581,7 @@ fn viewing_rev(conn: &Connection, id: &str, rev: Option<i64>) -> Result<Option<i
 fn load_page(
     ctx: &Context,
     conn: &Connection,
+    origin: &str,
     id: &str,
     rev: Option<i64>,
 ) -> Result<Option<Page>, Error> {
@@ -492,24 +629,25 @@ fn load_page(
         return Ok(None);
     }
     let marker = comments::change_marker(conn, id)?;
+    let list = comments::list(
+        conn,
+        ctx,
+        &comments::ListQuery {
+            artifact: Some(id.to_string()),
+            all: true,
+            since: None,
+            scope: ScopeFilter::unscoped(),
+        },
+    )?;
+    // Open Threads from any Revision; a resolved Thread only on its own.
+    let threads: Vec<comments::Thread> = list
+        .threads
+        .into_iter()
+        .filter(|t| t.status == "open" || t.revision == viewing)
+        .collect();
+    let base = format!("/a/{id}@{viewing}");
     let body = if kind == Kind::Markdown {
         let text = artifact::markdown_text(conn, id, Some(viewing))?;
-        let list = comments::list(
-            conn,
-            ctx,
-            &comments::ListQuery {
-                artifact: Some(id.to_string()),
-                all: true,
-                since: None,
-                scope: ScopeFilter::unscoped(),
-            },
-        )?;
-        // Open Threads from any Revision; a resolved Thread only on its own.
-        let threads: Vec<comments::Thread> = list
-            .threads
-            .into_iter()
-            .filter(|t| t.status == "open" || t.revision == viewing)
-            .collect();
         let counts = thread_counts(&text, viewing, &threads);
         let outline = sections::parse(&text)
             .into_iter()
@@ -520,12 +658,40 @@ fn load_page(
                 open_threads,
             })
             .collect();
+        let embeds = resolve_embeds(conn, origin, &text)?;
         Body::Markdown {
-            doc: doc_markup(&text, &format!("/a/{id}@{viewing}"), viewing, &threads),
+            doc: doc_markup(&text, &base, viewing, &threads, &embeds),
             outline,
         }
     } else {
-        Body::Other
+        let src = content_path(conn, id, viewing)?
+            .map(|(_, path)| content_url(origin, id, viewing, &path));
+        let frame = match (kind, src) {
+            (Kind::Html, Some(src)) => html! {
+                // Script only: never allow-same-origin, so the Bundle cannot
+                // reach this origin even though the content port is on the
+                // same host.
+                iframe.frame src=(src) sandbox="allow-scripts" title=(name)
+                    referrerpolicy="no-referrer" {}
+            },
+            (_, Some(src)) => html! {
+                div.imgframe { img src=(src) alt=(name); }
+            },
+            (_, None) => {
+                html! { div.placeholder { p { "This Revision has no content to show." } } }
+            }
+        };
+        let threads = html! {
+            section.whole {
+                div.row {
+                    button type="button" hx-get={ (base) "/compose?whole=1" }
+                        hx-target="#slot-whole" hx-swap="innerHTML" { "Comment on this revision" }
+                }
+                div #slot-whole {}
+                @for t in &threads { (thread_card(t, &base, viewing)) }
+            }
+        };
+        Body::Whole { frame, threads }
     };
     Ok(Some(Page {
         id: id.to_string(),
@@ -565,7 +731,8 @@ async fn artifact_page(
         };
     }
     let ctx = reviewer_ctx(&s.db_path, &s.reviewer);
-    let page = match blocking(&s.db_path, move |c| load_page(&ctx, c, &id, rev)).await {
+    let origin = s.origin();
+    let page = match blocking(&s.db_path, move |c| load_page(&ctx, c, &origin, &id, rev)).await {
         Ok(p) => p,
         Err(r) => return r.into_response(),
     };
@@ -596,6 +763,7 @@ async fn live_fragment(
         Err(e) => return e.into_response(),
     };
     let ctx = reviewer_ctx(&s.db_path, &s.reviewer);
+    let origin = s.origin();
     let r = blocking(&s.db_path, move |c| {
         let Some(viewing) = viewing_rev(c, &id, rev)? else {
             return Ok(None);
@@ -603,7 +771,7 @@ async fn live_fragment(
         if q.m.as_deref() == Some(comments::change_marker(c, &id)?.as_str()) {
             return Ok(Some(None));
         }
-        Ok(load_page(&ctx, c, &id, Some(viewing))?.map(|p| Some(live_markup(&p))))
+        Ok(load_page(&ctx, c, &origin, &id, Some(viewing))?.map(|p| Some(live_markup(&p))))
     })
     .await;
     match r {
@@ -650,12 +818,13 @@ where
         Err(e) => return e.into_response(),
     };
     let ctx = reviewer_ctx(&s.db_path, &s.reviewer);
+    let origin = s.origin();
     let r = blocking(&s.db_path, move |c| {
         let Some(viewing) = viewing_rev(c, &id, rev)? else {
             return Ok(None);
         };
         act(c, &ctx, &id, viewing)?;
-        Ok(load_page(&ctx, c, &id, Some(viewing))?.map(|p| live_markup(&p)))
+        Ok(load_page(&ctx, c, &origin, &id, Some(viewing))?.map(|p| live_markup(&p)))
     })
     .await;
     match r {
@@ -668,15 +837,18 @@ where
 struct ComposeParams {
     line: Option<i64>,
     section: Option<String>,
+    /// A Thread on the whole Revision (any Kind; the only form for non-text Kinds).
+    whole: Option<String>,
 }
 
-/// The inline form that starts a Thread at a line or Section.
+/// The inline form that starts a Thread at a line, a Section or the whole Revision.
 async fn compose(UrlPath(idrev): UrlPath<String>, Query(q): Query<ComposeParams>) -> Response {
     let (id, rev) = match target(&idrev) {
         Ok(t) => t,
         Err(e) => return e.into_response(),
     };
-    if q.line.is_none() == q.section.is_none() {
+    let forms = [q.line.is_some(), q.section.is_some(), q.whole.is_some()];
+    if forms.into_iter().filter(|b| *b).count() != 1 {
         return plain(StatusCode::BAD_REQUEST, "bad request");
     }
     let base = match rev {
@@ -693,6 +865,10 @@ async fn compose(UrlPath(idrev): UrlPath<String>, Query(q): Query<ComposeParams>
                 input type="hidden" name="section" value=(sec);
                 div.mut.small { "Comment on Section " (sec) }
             }
+            @if q.whole.is_some() {
+                input type="hidden" name="whole" value="1";
+                div.mut.small { "Comment on the whole revision" }
+            }
             textarea name="body" rows="3" required placeholder="Comment" autofocus {}
             div.row {
                 button type="submit" { "Comment" }
@@ -707,6 +883,8 @@ struct NewThread {
     body: String,
     line: Option<i64>,
     section: Option<String>,
+    /// Present for a whole-Revision Thread; the locator is then empty.
+    whole: Option<String>,
 }
 
 async fn new_thread(
@@ -716,6 +894,9 @@ async fn new_thread(
     Form(f): Form<NewThread>,
 ) -> Response {
     mutate(&s, &headers, &idrev, move |c, ctx, id, viewing| {
+        if f.whole.is_some() && (f.line.is_some() || f.section.is_some()) {
+            return Err(Error::Usage("whole excludes line and section".into()));
+        }
         let loc = comments::Locator {
             lines: f.line.map(|l| (l, l)),
             section: f.section,
@@ -776,15 +957,14 @@ async fn set_status(
 // --- page markup ------------------------------------------------------------------
 
 /// The part of the Artifact page that refreshes: the banner, outline, text and
-/// Threads. Markdown pages poll with their change marker; a 204 means no change.
+/// Threads. It polls with its change marker; a 204 means no change.
 fn live_markup(p: &Page) -> Markup {
     let here = format!("/a/{}", p.id);
-    let polling = matches!(p.body, Body::Markdown { .. });
     html! {
-        div #live data-poll[polling]
-            hx-get=[polling.then(|| format!("{here}@{}/live?m={}", p.viewing, p.marker))]
-            hx-trigger=[polling.then_some("every 2s")]
-            hx-swap=[polling.then_some("outerHTML")] {
+        div #live data-poll
+            hx-get={ (here) "@" (p.viewing) "/live?m=" (p.marker) }
+            hx-trigger="every 2s"
+            hx-swap="outerHTML" {
             @if p.viewing != p.latest {
                 div.banner {
                     "Viewing r" (p.viewing) ", not the latest (r" (p.latest) "). "
@@ -805,12 +985,7 @@ fn live_markup(p: &Page) -> Markup {
                         article.doc { (doc) }
                     }
                 }
-                Body::Other => {
-                    div.placeholder {
-                        p { "This " (p.kind.as_str()) " Artifact is not shown in the UI yet." }
-                        p.mut.small { "Use `cairn get " (p.id) "@" (p.viewing) "` to read it." }
-                    }
-                }
+                Body::Whole { threads, .. } => (threads),
             }
         }
     }
@@ -847,6 +1022,9 @@ fn page_markup(p: &Page) -> Markup {
                     button type="submit" { "Go" }
                 }
             }
+            // Outside #live: the poll replaces #live, and re-rendering an
+            // iframe would reload the Bundle on every new Comment.
+            @if let Body::Whole { frame, .. } = &p.body { (frame) }
             (live_markup(p))
         }
     }
@@ -859,8 +1037,14 @@ fn page_markup(p: &Page) -> Markup {
 /// the heading of the Section it names, or under the block holding its first
 /// line when it was made on this Revision. Anything else, such as a line
 /// Thread from an earlier Revision whose lines may have moved, is listed first.
-fn doc_markup(text: &str, base: &str, viewing: i64, threads: &[comments::Thread]) -> Markup {
-    let blocks = render_blocks(text);
+fn doc_markup(
+    text: &str,
+    base: &str,
+    viewing: i64,
+    threads: &[comments::Thread],
+    embeds: &Embeds,
+) -> Markup {
+    let blocks = render_blocks(text, embeds);
     let paths: Vec<String> = sections::parse(text)
         .iter()
         .map(|h| h.display_path())
@@ -933,6 +1117,8 @@ fn thread_card(t: &comments::Thread, base: &str, viewing: i64) -> Markup {
                 @if earlier { span.pill.label { "earlier revision" } span.mut.small { "r" (t.revision) } }
                 @if let Some(p) = &loc.section_path {
                     span.mut.small { "on " (p) }
+                } @else if loc.line_start.is_none() {
+                    span.mut.small { "Whole revision" }
                 } @else if let Some(a) = loc.line_start {
                     span.mut.small {
                         @if loc.line_end.is_some_and(|b| b != a) {
@@ -985,6 +1171,30 @@ fn safe_href(dest: &str) -> bool {
     }
 }
 
+fn md_options() -> Options {
+    Options::ENABLE_YAML_STYLE_METADATA_BLOCKS
+        | Options::ENABLE_TABLES
+        | Options::ENABLE_STRIKETHROUGH
+}
+
+/// `cairn:` image destinations of a document mapped to the content URL they
+/// show, or `None` when the target is gone or cannot be shown. Keyed by the
+/// destination string, not by position: the `embeds` table is parsed with
+/// other markdown options, so its ordinals need not line up with the renderer's.
+type Embeds = HashMap<String, Option<String>>;
+
+fn embed_html(url: Option<&str>, alt: &str) -> String {
+    match url {
+        Some(u) => html! { img src=(u) alt=(alt); },
+        None => html! {
+            span.embed-missing role="img" aria-label={ "missing image: " (alt) } {
+                (alt) " (missing image)"
+            }
+        },
+    }
+    .into_string()
+}
+
 /// One top-level block of the document.
 struct Block {
     html: String,
@@ -996,15 +1206,13 @@ struct Block {
 }
 
 /// Markdown to HTML, safe to embed, split into top-level blocks: raw HTML is
-/// dropped, images become their alt text (Artifact embeds are rendered
-/// elsewhere), links with other than http, https, mailto or relative targets
+/// dropped, images become their alt text except `cairn:` embeds, which become
+/// an `<img>` from the content origin (or a placeholder when `embeds` has no
+/// URL for them), links with other than http, https, mailto or relative targets
 /// lose their `href`, and every link gets `rel="noopener noreferrer"`.
 /// Top-level headings get `id="s<n>"` (1-based, in the order
 /// `sections::parse` lists them) for the outline.
-fn render_blocks(src: &str) -> Vec<Block> {
-    let opts = Options::ENABLE_YAML_STYLE_METADATA_BLOCKS
-        | Options::ENABLE_TABLES
-        | Options::ENABLE_STRIKETHROUGH;
+fn render_blocks(src: &str, embeds: &Embeds) -> Vec<Block> {
     let mut line_starts = vec![0usize];
     line_starts.extend(src.match_indices('\n').map(|(i, _)| i + 1));
     let line = |off: usize| line_starts.partition_point(|&s| s <= off) as i64;
@@ -1019,7 +1227,10 @@ fn render_blocks(src: &str) -> Vec<Block> {
     let mut heading = None;
     let mut cur: Vec<Event> = Vec::new();
     let mut blocks = Vec::new();
-    for (ev, range) in Parser::new_ext(src, opts).into_offset_iter() {
+    // Inside an embed's alt text: (resolved, alt so far, nested image depth).
+    let mut embed: Option<(Option<&str>, String, usize)> = None;
+    // Inside a plain image: its alt text shows, its tags do not.
+    for (ev, range) in Parser::new_ext(src, md_options()).into_offset_iter() {
         if nest == 0 {
             span = (range.start, range.end);
             heading = None;
@@ -1036,7 +1247,37 @@ fn render_blocks(src: &str) -> Vec<Block> {
                 None
             }
             Event::Text(_) if in_meta => None,
-            Event::Start(Tag::Image { .. }) | Event::End(TagEnd::Image) => None,
+            Event::Start(Tag::Image { dest_url, .. }) => {
+                match &mut embed {
+                    Some((_, _, d)) => *d += 1,
+                    None if dest_url.starts_with(embeds::SCHEME) => {
+                        let url = embeds.get(dest_url.as_ref()).and_then(|u| u.as_deref());
+                        embed = Some((url, String::new(), 0));
+                    }
+                    None => {}
+                }
+                None
+            }
+            Event::End(TagEnd::Image) => match embed.take() {
+                Some((url, alt, 0)) => Some(Event::Html(embed_html(url, &alt).into())),
+                Some((url, alt, d)) => {
+                    embed = Some((url, alt, d - 1));
+                    None
+                }
+                None => None,
+            },
+            Event::Text(t) | Event::Code(t) if embed.is_some() => {
+                if let Some((_, alt, _)) = &mut embed {
+                    alt.push_str(&t);
+                }
+                None
+            }
+            Event::SoftBreak | Event::HardBreak if embed.is_some() => {
+                if let Some((_, alt, _)) = &mut embed {
+                    alt.push(' ');
+                }
+                None
+            }
             Event::Start(Tag::Link {
                 dest_url, title, ..
             }) => {
@@ -1094,7 +1335,10 @@ fn render_blocks(src: &str) -> Vec<Block> {
 /// The markdown of `src` as one HTML string (see [`render_blocks`]).
 #[cfg(test)]
 fn render_markdown(src: &str) -> String {
-    render_blocks(src).into_iter().map(|b| b.html).collect()
+    render_blocks(src, &Embeds::new())
+        .into_iter()
+        .map(|b| b.html)
+        .collect()
 }
 
 #[cfg(test)]
@@ -1191,6 +1435,35 @@ mod tests {
     }
 
     #[test]
+    fn cairn_embed_alt_is_escaped_and_unresolved_is_a_placeholder() {
+        let mut e = Embeds::new();
+        e.insert(
+            "cairn:a".into(),
+            Some("http://127.0.0.1:1/a/a/1/p.png".into()),
+        );
+        let out = render_blocks("![x & `c`](cairn:a) ![y](cairn:gone)", &e)
+            .into_iter()
+            .map(|b| b.html)
+            .collect::<String>();
+        assert!(
+            out.contains("<img src=\"http://127.0.0.1:1/a/a/1/p.png\" alt=\"x &amp; c\">"),
+            "{out}"
+        );
+        assert!(
+            out.contains("class=\"embed-missing\"") && out.contains("y (missing image)"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn content_urls_escape_paths() {
+        assert_eq!(
+            content_url("http://o", "id", 2, "d/a b?#.png"),
+            "http://o/a/id/2/d/a%20b%3F%23.png"
+        );
+    }
+
+    #[test]
     fn text_is_escaped_and_headings_get_ids() {
         let out = render_markdown("---\ntitle: x\n---\n\n# A & <B>\n\n> ## quoted\n\n## C\n");
         assert!(out.contains("<h1 id=\"s1\">A &amp; "), "{out}");
@@ -1212,7 +1485,7 @@ mod tests {
     #[test]
     fn blocks_carry_line_spans_and_heading_indexes() {
         let src = "---\ntitle: x\n---\n\n# A\n\npara one\nline two\n\n```\ncode\n```\n\n## B\n";
-        let b = render_blocks(src);
+        let b = render_blocks(src, &Embeds::new());
         let spans: Vec<_> = b.iter().map(|b| (b.first, b.last, b.heading)).collect();
         assert_eq!(
             spans,

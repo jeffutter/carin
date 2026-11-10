@@ -237,6 +237,7 @@ pub(crate) fn ui_router(
     ui::router(ui::UiState {
         db_path,
         reviewer: reviewer.to_string(),
+        content_port,
     })
     .fallback(|| async { not_found() })
     .layer(map_response(move |res: Response| {
@@ -1198,14 +1199,205 @@ mod tests {
         assert!(text(&list).contains("<span class=\"pill open\">2</span>"));
     }
 
+    const ORIGIN: &str = "http://127.0.0.1:7878";
+
     #[tokio::test]
-    async fn non_markdown_kind_gets_a_placeholder_page() {
+    async fn html_page_frames_the_bundle_script_only() {
+        let f = Fixture::new();
+        let id = f.submit(
+            "b",
+            Kind::Html,
+            None,
+            files(&[("index.html", b"<h1>one</h1>"), ("a b.js", b"1")]),
+        );
+        f.edit(&id, files(&[("index.html", b"<h1>two</h1>")]));
+        let (st, _, body) = get(&f.ui, UI_HOST, &format!("/a/{id}@1")).await;
+        assert_eq!(st, StatusCode::OK);
+        let page = text(&body);
+        assert!(page.contains("<iframe"), "{page}");
+        assert!(page.contains("sandbox=\"allow-scripts\""), "{page}");
+        assert!(
+            page.contains(&format!("src=\"{ORIGIN}/a/{id}/1/index.html\"")),
+            "{page}"
+        );
+        assert!(!page.contains("allow-same-origin"), "{page}");
+        assert!(!page.contains("<img"), "{page}");
+        // The frame sits outside the polled region, so a poll never reloads it.
+        let live = page.find("id=\"live\"").unwrap();
+        assert!(page.find("<iframe").unwrap() < live, "{page}");
+        let (_, _, frag) = get(&f.ui, UI_HOST, &format!("/a/{id}@1/live")).await;
+        assert!(!text(&frag).contains("<iframe"));
+        // Latest by default.
+        let (_, _, body) = get(&f.ui, UI_HOST, &format!("/a/{id}")).await;
+        assert!(text(&body).contains(&format!("{ORIGIN}/a/{id}/2/index.html")));
+    }
+
+    #[tokio::test]
+    async fn image_and_diagram_pages_use_img_from_the_content_origin() {
+        let f = Fixture::new();
+        let img = f.submit("pic", Kind::Image, None, files(&[("my pic.png", PNG)]));
+        let svg = f.submit(
+            "d.svg",
+            Kind::Diagram,
+            Some(Format::Svg),
+            files(&[("d.svg", SVG.as_bytes())]),
+        );
+        let mmd = f.submit(
+            "m",
+            Kind::Diagram,
+            Some(Format::Mermaid),
+            files(&[("m.mmd", b"flowchart LR\n A --> B\n")]),
+        );
+        for (id, path) in [
+            (&img, "my%20pic.png"),
+            (&svg, "d.svg"),
+            (&mmd, "diagram.svg"),
+        ] {
+            let (st, _, body) = get(&f.ui, UI_HOST, &format!("/a/{id}")).await;
+            assert_eq!(st, StatusCode::OK);
+            let page = text(&body);
+            assert!(
+                page.contains(&format!("<img src=\"{ORIGIN}/a/{id}/1/{path}\"")),
+                "{page}"
+            );
+            assert!(!page.contains("<iframe"), "{page}");
+        }
+    }
+
+    #[tokio::test]
+    async fn whole_revision_threads_on_an_image() {
         let f = Fixture::new();
         let id = f.submit("pic", Kind::Image, None, files(&[("p.png", PNG)]));
-        let (st, _, body) = get(&f.ui, UI_HOST, &format!("/a/{id}")).await;
+        let (st, _, form) = get(&f.ui, UI_HOST, &format!("/a/{id}@1/compose?whole=1")).await;
         assert_eq!(st, StatusCode::OK);
-        assert!(text(&body).contains("not shown in the UI yet"));
+        assert!(text(&form).contains("name=\"whole\" value=\"1\""));
+        let new = format!("/a/{id}@1/threads");
+        let (st, frag) = post(&f.ui, UI_HOST, &new, "body=nice&whole=1", true).await;
+        assert_eq!(st, StatusCode::OK, "{frag}");
+        assert!(
+            frag.contains("Whole revision") && frag.contains("nice"),
+            "{frag}"
+        );
+        let (st, _) = post(&f.ui, UI_HOST, &new, "body=x&whole=1&line=2", true).await;
+        assert_eq!(st, StatusCode::BAD_REQUEST);
+        let t = threads(&f, &id);
+        assert_eq!(t.len(), 1);
+        assert_eq!(t[0].locator.line_start, None);
+        assert_eq!(t[0].locator.section_path, None);
+        let (_, _, list) = get(&f.ui, UI_HOST, "/").await;
+        assert!(text(&list).contains("<span class=\"pill open\">1</span>"));
+        // Reply and resolve.
+        let base = format!("/a/{id}@1/threads/{}", t[0].id);
+        let (st, _) = post(&f.ui, UI_HOST, &format!("{base}/reply"), "body=r", true).await;
+        assert_eq!(st, StatusCode::OK);
+        assert_eq!(threads(&f, &id)[0].replies.len(), 1);
+        let (st, _) = post(
+            &f.ui,
+            UI_HOST,
+            &format!("{base}/status"),
+            "status=resolved",
+            true,
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK);
+        assert_eq!(threads(&f, &id)[0].status, "resolved");
+        // An open Thread from r1 shows on r2, labelled as earlier.
+        let (st, _) = post(
+            &f.ui,
+            UI_HOST,
+            &format!("{base}/status"),
+            "status=open",
+            true,
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK);
+        f.edit(&id, files(&[("p.png", PNG)]));
+        let (_, _, body) = get(&f.ui, UI_HOST, &format!("/a/{id}@2")).await;
+        let page = text(&body);
+        assert!(
+            page.contains("earlier revision") && page.contains("nice"),
+            "{page}"
+        );
     }
+
+    #[tokio::test]
+    async fn embeds_render_pinned_latest_and_missing() {
+        let f = Fixture::new();
+        let img = f.submit("pic", Kind::Image, None, files(&[("p.png", PNG)]));
+        let doc = md(
+            &f,
+            "doc",
+            &format!(
+                "![latest & x](cairn:{img})\n\n![pinned](cairn:{img}@1)\n\n\
+                 ![web](https://evil.example/x.png) ![data](data:image/png;base64,AA) ![rel](x.png)\n"
+            ),
+        );
+        f.edit(&img, files(&[("p.png", PNG)]));
+        let (_, _, body) = get(&f.ui, UI_HOST, &format!("/a/{doc}")).await;
+        let page = text(&body);
+        assert!(
+            page.contains(&format!(
+                "<img src=\"{ORIGIN}/a/{img}/2/p.png\" alt=\"latest &amp; x\">"
+            )),
+            "{page}"
+        );
+        assert!(
+            page.contains(&format!(
+                "<img src=\"{ORIGIN}/a/{img}/1/p.png\" alt=\"pinned\">"
+            )),
+            "{page}"
+        );
+        assert_eq!(page.matches("<img").count(), 2, "{page}");
+        assert!(page.contains("web") && page.contains("data") && page.contains("rel"));
+        assert!(!page.contains("evil.example") && !page.contains("embed-missing"));
+        // Delete the target: both show the placeholder.
+        let (st, _) = post(&f.ui, UI_HOST, &format!("/a/{img}/delete"), "", true).await;
+        assert_eq!(st, StatusCode::OK);
+        let (_, _, body) = get(&f.ui, UI_HOST, &format!("/a/{doc}")).await;
+        let page = text(&body);
+        assert_eq!(page.matches("class=\"embed-missing\"").count(), 2, "{page}");
+        assert!(!page.contains("<img"), "{page}");
+    }
+
+    #[tokio::test]
+    async fn delete_from_the_list() {
+        let f = Fixture::new();
+        let a = md(&f, "keep", "# A\n");
+        let b = f.submit("gone", Kind::Image, None, files(&[("p.png", PNG)]));
+        let uri = format!("/a/{b}/delete");
+        assert_eq!(
+            post(&f.ui, UI_HOST, &uri, "", false).await.0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            get(&f.ui, UI_HOST, &format!("/a/{b}")).await.0,
+            StatusCode::OK
+        );
+        // The kind filter rides along; the response is the table under it.
+        let (st, frag) = post(&f.ui, UI_HOST, &uri, "project=&kind=image", true).await;
+        assert_eq!(st, StatusCode::OK);
+        assert!(frag.contains("No Artifacts."), "{frag}");
+        assert_eq!(
+            get(&f.ui, UI_HOST, &format!("/a/{b}")).await.0,
+            StatusCode::NOT_FOUND
+        );
+        // Already gone is fine; the other Artifact is untouched.
+        let (st, frag) = post(&f.ui, UI_HOST, &uri, "kind=", true).await;
+        assert_eq!(st, StatusCode::OK);
+        assert!(
+            frag.contains(&format!("href=\"/a/{a}\"")) && !frag.contains(&b),
+            "{frag}"
+        );
+        assert!(
+            frag.contains(&format!("hx-post=\"/a/{a}/delete\"")),
+            "{frag}"
+        );
+        assert_eq!(
+            post(&f.ui, UI_HOST, &uri, "kind=bogus", true).await.0,
+            StatusCode::BAD_REQUEST
+        );
+    }
+
     #[tokio::test]
     async fn host_allowlist_on_both_routers() {
         let f = Fixture::new();

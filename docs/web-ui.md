@@ -11,13 +11,13 @@ The review UI is where the Reviewer reads Artifacts and discusses them. It is se
 
 ## Artifact list
 
-A plain table: name, Kind, project and worktree, latest Revision, open Thread count, size, updated. Filterable by project and Kind. Unscoped by default. Each row has a delete action. Sorted by newest activity.
+A plain table: name, Kind, project and worktree, latest Revision, open Thread count, size, updated. Filterable by project and Kind. Unscoped by default. Each row has a Delete button (confirm, then `POST /a/<id>/delete` with the current filters; the response is the redrawn table). Sorted by newest activity.
 
 ## Artifact page
 
 - **Header**: name, Kind, a revision dropdown (the only revision navigation; there is no revision list in the sidebar). Viewing an old Revision shows a banner that it is not the latest, linking to the latest.
 - **Markdown**: a sticky outline sidebar with open-Thread counts per Section. Threads render inline under the Section or line they anchor to. A line-number gutter and a per-heading "+ section" button start a new Thread.
-- **Other Kinds** (html, image, diagram): the same page with the Kind's frame in place of the text. Comments are on the whole Revision.
+- **Other Kinds** (html, image, diagram): the same page with the Kind's frame in place of the text. Comments are on the whole Revision (`compose?whole=1`). The frame is pinned to the viewed Revision and sits outside the polled region, so a new Comment never reloads a Bundle.
 - **Threads from other Revisions**: an open Thread made on an earlier Revision still shows when another Revision is viewed, with a dashed border and an "earlier revision" label. A resolved Thread from another Revision is hidden.
 - **Phones**: below about 800 px the layout collapses to one column and the sidebar becomes static.
 - **Live refresh**: an htmx poll every 2 s on the Artifact page, paused while the tab is hidden, using the same latest-comment check as `--wait`. Fixed, no flag. The UI does not use the long-poll endpoint. The poll sends a change marker (highest Comment id, a sum over resolved Thread ids, latest Revision) and gets 204 when it is unchanged; the marker also covers resolve and reopen, which add no Comment. A refresh is skipped while a compose form is open or a textarea holds text, so a draft is never wiped.
@@ -39,6 +39,6 @@ Everything an Agent supplies is untrusted. The model is in [ADR 0005](adr/0005-s
 - **markdown** Artifacts are 404 on the content port; the UI renders them. An unknown Artifact, Revision or path, a malformed Revision (`latest` is not an alias) and a wrong-Kind path all return the same fixed `not found` body.
 - **Every** untrusted response carries `X-Content-Type-Options: nosniff`, a CSP, and a `Content-Type` from the allowlisted media type stored at submit.
 - **The UI itself** renders markdown with raw HTML dropped, escapes comment text, author names and titles, strips `javascript:` and `data:` links, opens links with `rel="noopener noreferrer"`, and sets its own strict CSP with `frame-ancestors 'self'`.
-- **Markdown embeds** (`cairn:`) render as `<img>` from the content origin. `http:`, `data:` and relative image URLs show as alt text. An embed whose target is deleted shows a missing-image placeholder.
+- **Markdown embeds** (`cairn:`) render as `<img>` from the content origin: `cairn:id@N` shows Revision N, `cairn:id` the target's current latest Revision (resolved when the page renders), by destination string rather than the `embeds` table's ordinals. `http:`, `data:` and relative image URLs show as alt text. An embed whose target is deleted shows a missing-image placeholder.
 
 The spike in `.wayfinder/assets/web-safety-spike/` verified these in Chromium: relative, absolute-path and `data:` images load in the sandboxed frame; remote images, `fetch` and parent or storage access are blocked; a script in an SVG opened directly runs only if the CSP sandbox allows scripts. Not verified: other browsers and the iframe `csp` attribute.

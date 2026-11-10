@@ -143,6 +143,7 @@ dependencies = [
  "getrandom",
  "http-body-util",
  "maud",
+ "percent-encoding",
  "pulldown-cmark",
  "roxmltree",
  "rquickjs",
