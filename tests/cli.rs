@@ -566,7 +566,47 @@ mod list_delete {
             .output()
             .unwrap();
         assert_eq!(json(&o.stdout)["artifacts"].as_array().unwrap().len(), 2);
-        assert_eq!(list(&db, &["--open"]).len(), 0);
+        // --open is rejected until Threads exist
+        let o = base(&db).args(["list", "--open"]).output().unwrap();
+        assert_eq!(o.status.code(), Some(2));
+    }
+
+    #[test]
+    fn session_and_mine_match_latest_revision_author() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("c.db");
+        let id = submit(
+            &db,
+            dir.path(),
+            "a.md",
+            b"one",
+            &["--session", "s1", "--author", "A"],
+        );
+        let f = dir.path().join("e.md");
+        std::fs::write(&f, "two").unwrap();
+        let o = base(&db)
+            .args(["--session", "s2", "--author", "B", "edit", &id])
+            .arg(&f)
+            .output()
+            .unwrap();
+        assert_eq!(o.status.code(), Some(0));
+        let ids_for = |args: &[&str]| {
+            let o = base(&db).args(args).output().unwrap();
+            ids(json(&o.stdout)["artifacts"].as_array().unwrap())
+        };
+        assert_eq!(
+            ids_for(&["--session", "s2", "list", "--mine"]),
+            vec![id.clone()]
+        );
+        assert_eq!(ids_for(&["--session", "s2", "list"]), vec![id.clone()]);
+        assert_eq!(
+            ids_for(&["--author", "B", "list", "--mine"]),
+            vec![id.clone()]
+        );
+        assert!(ids_for(&["--session", "s1", "list", "--mine"]).is_empty());
+        assert!(ids_for(&["--author", "A", "list", "--mine"]).is_empty());
+        let rows = list(&db, &[]);
+        assert_eq!(rows[0]["author"], "B");
     }
 
     #[test]

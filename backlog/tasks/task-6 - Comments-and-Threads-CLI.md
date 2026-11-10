@@ -4,6 +4,7 @@ title: Comments and Threads (CLI)
 status: To Do
 assignee: []
 created_date: '2026-11-09T23:55:00Z'
+updated_date: '2026-11-10T00:27:00Z'
 labels: []
 dependencies:
   - TASK-5
@@ -26,3 +27,9 @@ Reviewer and Agent discussion from the command line. `comment add <id>[@rev] <bo
 - [ ] #6 A Comment on a Revision that is not the latest is accepted and reported `stale`
 - [ ] #7 The open Thread count in `list` (ticket 04) is now populated
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+From TASK-19: list --open is currently rejected with a usage error (src/artifact.rs list). Implement it against the real threads table and replace the rejection; open_threads column is still constant 0.
+<!-- SECTION:NOTES:END -->

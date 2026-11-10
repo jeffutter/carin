@@ -267,15 +267,15 @@ pub fn get(conn: &Connection, id: &str, revision: Option<i64>) -> Result<Vec<u8>
     .ok_or_else(|| Error::NotFound(format!("no revision {id}@{rev}")))
 }
 
-/// Filters for [`list`]. `session` and `mine` look at Revision 1, the
-/// Revision that created the Artifact.
+/// Filters for [`list`]. `session` and `mine` look at the latest Revision,
+/// the one the AUTHOR column shows.
 pub struct ListFilter {
     pub kind: Option<Kind>,
-    /// Created in this Session.
+    /// Latest Revision made in this Session.
     pub session: Option<String>,
-    /// Created by this author.
+    /// Latest Revision made by this author.
     pub author: Option<String>,
-    /// Only Artifacts with open Threads.
+    /// Only Artifacts with open Threads. Rejected until Threads exist (TASK-6).
     pub open: bool,
     /// Only Artifacts last updated more than this many seconds ago.
     pub older_than_secs: Option<i64>,
@@ -300,12 +300,16 @@ pub struct ListRow {
 
 /// Artifacts, newest activity first.
 pub fn list(conn: &Connection, f: &ListFilter) -> Result<Vec<ListRow>, Error> {
-    // Threads arrive with the comments table (TASK-6); until then none are open.
-    const OPEN_THREADS: &str = "0";
-    let sql = format!(
-        "SELECT a.id, a.kind, a.name,
+    // Threads arrive with the comments table (TASK-6); until then none exist,
+    // so a filter on open Threads cannot mean anything.
+    if f.open {
+        return Err(Error::Usage(
+            "--open is not available until Threads exist (TASK-6)".into(),
+        ));
+    }
+    let sql = "SELECT a.id, a.kind, a.name,
                 (SELECT MAX(number) FROM revisions WHERE artifact_id = a.id),
-                {OPEN_THREADS},
+                0,
                 (SELECT author FROM revisions WHERE artifact_id = a.id ORDER BY number DESC LIMIT 1),
                 COALESCE((SELECT SUM(LENGTH(b.bytes)) FROM blobs b WHERE b.sha256 IN
                     (SELECT sha256 FROM revision_files WHERE artifact_id = a.id)), 0),
@@ -313,23 +317,20 @@ pub fn list(conn: &Connection, f: &ListFilter) -> Result<Vec<ListRow>, Error> {
          FROM artifacts a
          WHERE (?1 IS NULL OR a.kind = ?1)
            AND (?2 IS NULL OR EXISTS (SELECT 1 FROM revisions r
-                 WHERE r.artifact_id = a.id AND r.number = 1 AND r.session = ?2))
+                 WHERE r.artifact_id = a.id AND r.number = (SELECT MAX(number) FROM revisions WHERE artifact_id = a.id) AND r.session = ?2))
            AND (?3 IS NULL OR EXISTS (SELECT 1 FROM revisions r
-                 WHERE r.artifact_id = a.id AND r.number = 1 AND r.author = ?3))
-           AND (?4 = 0 OR {OPEN_THREADS} > 0)
-           AND (?5 IS NULL OR a.updated_at < strftime('%Y-%m-%dT%H:%M:%fZ','now', ?5))
+                 WHERE r.artifact_id = a.id AND r.number = (SELECT MAX(number) FROM revisions WHERE artifact_id = a.id) AND r.author = ?3))
+           AND (?4 IS NULL OR a.updated_at < strftime('%Y-%m-%dT%H:%M:%fZ','now', ?4))
          ORDER BY a.updated_at DESC, a.id DESC
-         LIMIT ?6"
-    );
+         LIMIT ?5";
     let older = f.older_than_secs.map(|n| format!("-{n} seconds"));
-    let mut stmt = conn.prepare(&sql).map_err(db_err)?;
+    let mut stmt = conn.prepare(sql).map_err(db_err)?;
     let rows = stmt
         .query_map(
             params![
                 f.kind.map(|k| k.as_str()),
                 f.session,
                 f.author,
-                f.open as i64,
                 older,
                 f.limit
             ],
