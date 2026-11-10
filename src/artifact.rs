@@ -171,11 +171,14 @@ pub fn edit(
     base: Option<i64>,
     addresses: &[i64],
 ) -> Result<Ref, Error> {
-    // The Mermaid render can take up to the render time limit, so it runs
-    // before the write lock is taken (as submit does) and only the inputs it
-    // depended on are re-checked inside the transaction. Kind and format are
+    // Cheap checks (missing Artifact, stale base, unknown addresses) run first
+    // so they never pay for, or lose to a Rejected from, the Mermaid render.
+    // The render can take up to the render time limit, so it then runs before
+    // the write lock is taken (as submit does); the checks and only the inputs
+    // it depended on are re-checked inside the transaction. Kind and format are
     // fixed at creation; the single file path of a non-Html Artifact can
     // change, which is the one real race.
+    check_preconditions(conn, id, base, addresses)?;
     let plan = EditPlan::read(conn, id)?;
     let mut input = input;
     if plan.kind == Kind::Image && input.files.len() == 1 && input.files[0].path == "-" {
@@ -332,8 +335,24 @@ struct Latest<'a> {
 }
 
 impl Latest<'_> {
+    /// Path-only query: does not load the blob bytes.
     fn single_path(&self) -> Result<String, Error> {
-        Ok(self.single()?.0)
+        let mut stmt = self
+            .tx
+            .prepare("SELECT path FROM revision_files WHERE artifact_id = ?1 AND revision = ?2")
+            .map_err(db_err)?;
+        let rows = stmt
+            .query_map(params![self.id, self.revision], |r| r.get::<_, String>(0))
+            .map_err(db_err)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(db_err)?;
+        let mut it = rows.into_iter();
+        match (it.next(), it.next()) {
+            (Some(path), None) => Ok(path),
+            _ => Err(Error::Rejected(
+                "the latest Revision is not a single file".into(),
+            )),
+        }
     }
 
     fn single_bytes(&self) -> Result<Vec<u8>, Error> {
@@ -366,6 +385,56 @@ impl Latest<'_> {
     }
 }
 
+/// What `check_preconditions` learned: Kind, latest Revision number, addressed
+/// threads as (root id, its Revision).
+struct Preconditions {
+    kind: String,
+    latest: i64,
+    threads: Vec<(i64, i64)>,
+}
+
+/// The cheap, read-only checks every edit must pass: the Artifact exists, a
+/// given base is the latest Revision, and every addressed id is a root
+/// Comment of it. Returns the Kind, the latest Revision number and the
+/// addressed threads. `edit` runs it before the slow prepare and again inside
+/// the write transaction, where it is authoritative.
+fn check_preconditions(
+    conn: &Connection,
+    id: &str,
+    base: Option<i64>,
+    addresses: &[i64],
+) -> Result<Preconditions, Error> {
+    let kind: String = conn
+        .query_row("SELECT kind FROM artifacts WHERE id = ?1", [id], |r| {
+            r.get(0)
+        })
+        .optional()
+        .map_err(db_err)?
+        .ok_or_else(|| Error::NotFound(format!("no artifact {id}")))?;
+    let (latest, author): (i64, String) = conn
+        .query_row(
+            "SELECT number, author FROM revisions WHERE artifact_id = ?1
+             ORDER BY number DESC LIMIT 1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(db_err)?;
+    if let Some(b) = base
+        && b != latest
+    {
+        return Err(Error::Conflict(format!(
+            "stale base: you edited from @{b} but latest_revision is {latest}, written by {author}"
+        )));
+    }
+    // Validate before any insert so a bad id leaves no Revision.
+    let threads = comments::check_addressable(conn, id, addresses)?;
+    Ok(Preconditions {
+        kind,
+        latest,
+        threads,
+    })
+}
+
 /// Shared insert path. `produce` gets the Artifact's Kind and its latest
 /// Revision and returns the checked files of the new one.
 fn append_revision(
@@ -377,30 +446,11 @@ fn append_revision(
     produce: impl FnOnce(&str, &Latest) -> Result<Vec<FileInput>, Error>,
 ) -> Result<Ref, Error> {
     write_tx(conn, |tx| {
-        let kind: String = tx
-            .query_row("SELECT kind FROM artifacts WHERE id = ?1", [id], |r| {
-                r.get(0)
-            })
-            .optional()
-            .map_err(db_err)?
-            .ok_or_else(|| Error::NotFound(format!("no artifact {id}")))?;
-        let (latest, author): (i64, String) = tx
-            .query_row(
-                "SELECT number, author FROM revisions WHERE artifact_id = ?1
-                 ORDER BY number DESC LIMIT 1",
-                [id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .map_err(db_err)?;
-        if let Some(b) = base
-            && b != latest
-        {
-            return Err(Error::Conflict(format!(
-                "stale base: you edited from @{b} but latest_revision is {latest}, written by {author}"
-            )));
-        }
-        // Validate before any insert so a bad id leaves no Revision.
-        let threads = comments::check_addressable(tx, id, addresses)?;
+        let Preconditions {
+            kind,
+            latest,
+            threads,
+        } = check_preconditions(tx, id, base, addresses)?;
         let files = produce(
             &kind,
             &Latest {
@@ -812,6 +862,32 @@ mod tests {
         assert!(matches!(err, Error::Rejected(_)), "{err:?}");
         assert!(start.elapsed() < std::time::Duration::from_secs(1));
         drop(held);
+    }
+
+    #[test]
+    fn cheap_checks_win_over_prepare_rejection() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = test_ctx(dir.path());
+        let mut conn = crate::db::open(&ctx.db_path).unwrap();
+        let r = submit(
+            &mut conn,
+            &ctx,
+            SubmitInput {
+                name: "d.svg".into(),
+                kind: Kind::Diagram,
+                format: Some(Format::Svg),
+                input: raw("d.svg", "<svg xmlns=\"http://www.w3.org/2000/svg\"/>"),
+                scope: None,
+            },
+        )
+        .unwrap();
+        let bad = || raw("d.svg", "not svg");
+        let err = edit(&mut conn, &ctx, &r.id, bad(), Some(99), &[]).unwrap_err();
+        assert!(matches!(err, Error::Conflict(_)), "{err:?}");
+        let err = edit(&mut conn, &ctx, "nope", bad(), None, &[]).unwrap_err();
+        assert!(matches!(err, Error::NotFound(_)), "{err:?}");
+        let err = edit(&mut conn, &ctx, &r.id, bad(), None, &[12345]).unwrap_err();
+        assert!(matches!(err, Error::NotFound(_)), "{err:?}");
     }
 
     #[test]
