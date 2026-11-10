@@ -386,7 +386,13 @@ fn reviewer_ctx(db_path: &Path, reviewer: &str) -> Context {
 
 /// 1-based line of a byte offset.
 fn line_of(text: &str, offset: usize) -> i64 {
-    text[..offset.min(text.len())].matches('\n').count() as i64 + 1
+    // Count bytes, not a str slice: `offset` may fall inside a multibyte char,
+    // and '\n' never occurs inside a multibyte UTF-8 sequence.
+    text.as_bytes()[..offset.min(text.len())]
+        .iter()
+        .filter(|&&b| b == b'\n')
+        .count() as i64
+        + 1
 }
 
 /// Open Threads per heading of `text`, in heading order. A Thread belongs to
@@ -1094,6 +1100,41 @@ fn render_markdown(src: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn line_of_mid_char_offset_does_not_panic() {
+        let text = "a\nb\u{4e16}";
+        // Byte 4 is inside the 3-byte char that starts at byte 3.
+        assert_eq!(line_of(text, 4), 2);
+        assert_eq!(line_of(text, 1), 1);
+        assert_eq!(line_of(text, 99), 2);
+    }
+
+    #[test]
+    fn thread_counts_multibyte_final_char_without_newline() {
+        let text = "# T\nhello \u{4e16}";
+        let thread = comments::Thread {
+            id: 1,
+            artifact_id: "a".into(),
+            revision: 1,
+            latest_revision: 1,
+            stale: false,
+            status: "open".into(),
+            author: "x".into(),
+            role: "agent".into(),
+            session: None,
+            body: "b".into(),
+            created_at: String::new(),
+            locator: comments::StoredLocator {
+                line_start: Some(2),
+                line_end: Some(2),
+                quoted_text: None,
+                section_path: None,
+            },
+            replies: vec![],
+        };
+        assert_eq!(thread_counts(text, 1, &[thread]), vec![1]);
+    }
 
     #[test]
     fn raw_html_is_dropped() {
