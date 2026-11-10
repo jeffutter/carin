@@ -42,3 +42,7 @@ Everything an Agent supplies is untrusted. The model is in [ADR 0005](adr/0005-s
 - **Markdown embeds** (`cairn:`) render as `<img>` from the content origin: `cairn:id@N` shows Revision N, `cairn:id` the target's current latest Revision (resolved when the page renders), by destination string rather than the `embeds` table's ordinals. `http:`, `data:` and relative image URLs show as alt text. An embed whose target is deleted shows a missing-image placeholder.
 
 The spike in `.wayfinder/assets/web-safety-spike/` verified these in Chromium: relative, absolute-path and `data:` images load in the sandboxed frame; remote images, `fetch` and parent or storage access are blocked; a script in an SVG opened directly runs only if the CSP sandbox allows scripts. Not verified: other browsers and the iframe `csp` attribute.
+
+## Theming
+
+The UI follows the viewer's `prefers-color-scheme` with plain CSS: a light palette by default and a dark override of the same variables (`color-scheme: light dark` on `:root`). No script is involved. Markdown is rendered by cairn, so it uses the same variables. Agent html runs on the content origin and sees the browser's own `prefers-color-scheme` inside its iframe, so no message passes between origins and the sandbox and CSP are unchanged (ADR 0005); html written for light only shows a light canvas inside a bordered frame. Images, svg and Mermaid diagrams are authored for light backgrounds, so they keep a light backing (`--media`) in both schemes.

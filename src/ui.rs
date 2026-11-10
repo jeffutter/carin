@@ -1522,5 +1522,19 @@ mod tests {
     #[test]
     fn stylesheet_collapses_below_800px() {
         assert!(APP_CSS.contains("@media(max-width:800px)"));
+        assert!(APP_CSS.contains("@media(prefers-color-scheme:dark)"));
+        assert!(APP_CSS.contains("color-scheme:light dark"));
+        // Colours live in variables; only the --media light backing and
+        // the light :root block may use literals.
+        for (i, line) in APP_CSS.lines().enumerate() {
+            if line.starts_with(":root{") || line.starts_with("@media(prefers-color-scheme:dark)") {
+                continue;
+            }
+            assert!(
+                !line.contains("#fff") && !line.contains("#f5f5f4"),
+                "hardcoded colour on style.css line {}",
+                i + 1
+            );
+        }
     }
 }
