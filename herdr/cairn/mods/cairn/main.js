@@ -61,7 +61,8 @@ function splitAtEmbeds(md, embeds) {
 // through to `cairn` on PATH.
 const BINS = ["@cairn@", "cairn"];
 const POLL_MS = 3000;
-const PANEL = { stack: "panel-body", child: "cairn", id: "panel" };
+// weight: the right column is resized to this share when an Artifact opens it. The main pane has the default weight 1, so 1 = half of the work area (clamped by the panel's min/max px).
+const PANEL = { stack: "panel-body", child: "cairn", id: "panel", weight: 1 };
 
 function location() {
   const space = spaces().find((s) => s.active), f = focused();
@@ -132,6 +133,7 @@ export default class Cairn extends View {
   reveal(item, loc, context, cx) {
     this.view = item.id;
     run("layout.select", { stack: PANEL.stack, child: PANEL.child });
+    run("layout.resize", { id: PANEL.id, weight: PANEL.weight });
     run("layout.show", { id: PANEL.id });
     cx.spawn(async (cx) => { await this.loadDetail(item.id, loc, context).catch(() => {}); cx.notify(); });
   }
