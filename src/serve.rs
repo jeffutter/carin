@@ -12,10 +12,11 @@
 //! each request opens its own inside `spawn_blocking` (WAL makes this safe
 //! alongside CLI writers).
 
-use std::net::{Ipv4Addr, SocketAddr, TcpListener};
+use std::net::{IpAddr, SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
+use axum::Extension;
 use axum::Router;
 use axum::extract::Request;
 use axum::extract::{Path as UrlPath, State};
@@ -53,15 +54,15 @@ pub fn resolve_ports(port: u16, content_port: Option<u16>) -> Result<(u16, u16),
     Ok((port, content))
 }
 
-/// Bind 127.0.0.1 only. A bind failure names the port.
-pub(crate) fn bind_loopback(port: u16) -> Result<TcpListener, Error> {
-    let l = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, port))).map_err(|e| {
+/// Bind `ip:port`. A bind failure names the port.
+pub(crate) fn bind(ip: IpAddr, port: u16) -> Result<TcpListener, Error> {
+    let l = TcpListener::bind(SocketAddr::new(ip, port)).map_err(|e| {
         if e.kind() == std::io::ErrorKind::AddrInUse {
             Error::Unexpected(format!(
                 "port {port} is already in use; pass --port / --content-port"
             ))
         } else {
-            Error::Unexpected(format!("cannot listen on 127.0.0.1:{port}: {e}"))
+            Error::Unexpected(format!("cannot listen on {ip}:{port}: {e}"))
         }
     })?;
     l.set_nonblocking(true)
@@ -125,7 +126,6 @@ impl Renderer {
 #[derive(Clone)]
 struct ContentState {
     db_path: PathBuf,
-    ui_port: u16,
     renderer: Renderer,
 }
 
@@ -133,6 +133,7 @@ struct ContentState {
 /// runs, so a taken port fails fast with a non-zero exit.
 pub fn serve(
     db_path: &Path,
+    bind_ip: IpAddr,
     ui_port: u16,
     content_port: u16,
     reviewer: &str,
@@ -140,20 +141,37 @@ pub fn serve(
 ) -> Result<u8, Error> {
     // Create and migrate the database up front so a bad path fails here.
     db::open(db_path)?;
-    let ui_listener = bind_loopback(ui_port)?;
-    let content_listener = bind_loopback(content_port)?;
-    let ui = ui_router(db_path.to_path_buf(), reviewer, content_port, ui_port);
+    let ui_listener = bind(bind_ip, ui_port)?;
+    let content_listener = bind(bind_ip, content_port)?;
+    let exposed = !bind_ip.is_loopback();
+    let ui = ui_router(
+        db_path.to_path_buf(),
+        reviewer,
+        content_port,
+        ui_port,
+        exposed,
+    );
     let content = content_router(
         db_path.to_path_buf(),
         ui_port,
         content_port,
+        exposed,
         Renderer::start(),
     );
+    // A wildcard address is not a URL a browser can open; print loopback.
+    let shown = if bind_ip.is_unspecified() {
+        "127.0.0.1".to_string()
+    } else {
+        match bind_ip {
+            IpAddr::V4(a) => a.to_string(),
+            IpAddr::V6(a) => format!("[{a}]"),
+        }
+    };
     crate::output::emit(
         fmt,
         &crate::output::ServeStarted {
-            ui: format!("http://127.0.0.1:{ui_port}"),
-            content: format!("http://127.0.0.1:{content_port}"),
+            ui: format!("http://{shown}:{ui_port}"),
+            content: format!("http://{shown}:{content_port}"),
             reviewer: reviewer.to_string(),
         },
     );
@@ -201,36 +219,75 @@ use crate::ui::not_found;
 
 // --- UI port ----------------------------------------------------------------
 
-/// True when `host` is exactly a loopback name for this listener's own port.
-/// Exact match only: a rebound attacker name (`evil.example:port`) or a
-/// lookalike (`localhost.evil.example:port`) never passes.
-fn host_allowed(host: &str, port: u16) -> bool {
+/// The hostname part of `host` when it is acceptable for this listener's
+/// own `port`, else None. Loopback binds accept exactly `127.0.0.1`,
+/// `localhost` and `[::1]` (an exact match, so a rebound attacker name or a
+/// lookalike like `localhost.evil.example` never passes). A non-loopback bind
+/// cannot know its names, so it accepts any well-formed hostname or IP
+/// literal; the charset check keeps the value safe to echo into a CSP header
+/// and a URL.
+fn host_name(host: &str, port: u16, exposed: bool) -> Option<String> {
     let host = host.to_ascii_lowercase();
-    [
-        format!("127.0.0.1:{port}"),
-        format!("localhost:{port}"),
-        format!("[::1]:{port}"),
-    ]
-    .contains(&host)
+    let name = host.strip_suffix(&format!(":{port}"))?;
+    let ok = if exposed {
+        let bare = name
+            .strip_prefix('[')
+            .and_then(|n| n.strip_suffix(']'))
+            .map(|n| {
+                n.chars()
+                    .all(|c| c.is_ascii_hexdigit() || c == ':' || c == '.')
+            });
+        match bare {
+            Some(v6) => v6 && name.len() > 2,
+            None => {
+                !name.is_empty()
+                    && name
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+            }
+        }
+    } else {
+        matches!(name, "127.0.0.1" | "localhost" | "[::1]")
+    };
+    ok.then(|| name.to_string())
 }
 
-/// Outermost layer on both listeners. Defeats DNS rebinding: a page on
-/// `evil.example` re-resolved to 127.0.0.1 still sends `Host: evil.example`,
-/// so it is refused before routing, reads included. Missing Host is refused.
-async fn require_loopback_host(port: u16, req: Request, next: Next) -> Response {
-    let ok = req
+/// Outermost layer on both listeners. Refuses a Host this listener should not
+/// answer to (403, before routing, reads included; a missing Host too), which
+/// defeats DNS rebinding on a loopback bind. On success it records the
+/// `Origins` the browser used for the handlers and returns the response
+/// hardened with `ui_csp` (the UI port) or the scriptless CSP.
+async fn check_host(
+    ui_port: u16,
+    content_port: u16,
+    own_port: u16,
+    exposed: bool,
+    ui_side: bool,
+    mut req: Request,
+    next: Next,
+) -> Response {
+    let name = req
         .headers()
         .get(header::HOST)
         .and_then(|h| h.to_str().ok())
-        .is_some_and(|h| host_allowed(h, port));
-    if ok {
-        next.run(req).await
-    } else {
-        harden(
+        .and_then(|h| host_name(h, own_port, exposed));
+    let Some(name) = name else {
+        return harden(
             (StatusCode::FORBIDDEN, "forbidden").into_response(),
             HeaderValue::from_static(SCRIPTLESS_CSP),
-        )
-    }
+        );
+    };
+    let origins = ui::Origins {
+        ui: format!("http://{name}:{ui_port}"),
+        content: format!("http://{name}:{content_port}"),
+    };
+    let csp = if ui_side {
+        ui::csp(&origins.content)
+    } else {
+        HeaderValue::from_static(SCRIPTLESS_CSP)
+    };
+    req.extensions_mut().insert(origins);
+    harden(next.run(req).await, csp)
 }
 
 pub(crate) fn ui_router(
@@ -238,24 +295,19 @@ pub(crate) fn ui_router(
     reviewer: &str,
     content_port: u16,
     ui_port: u16,
+    exposed: bool,
 ) -> Router {
-    let csp = ui::csp(content_port);
     let db_path_api = db_path.clone();
     ui::router(ui::UiState {
         db_path,
         reviewer: reviewer.to_string(),
-        content_port,
     })
     // Before the fallback and the layers, so the API inherits the Host check
     // and the hardening.
     .merge(crate::api::router(db_path_api))
     .fallback(|| async { not_found() })
-    .layer(map_response(move |res: Response| {
-        let csp = csp.clone();
-        async move { harden(res, csp) }
-    }))
     .layer(from_fn(move |req, next| {
-        require_loopback_host(ui_port, req, next)
+        check_host(ui_port, content_port, ui_port, exposed, true, req, next)
     }))
 }
 
@@ -265,6 +317,7 @@ pub(crate) fn content_router(
     db_path: PathBuf,
     ui_port: u16,
     content_port: u16,
+    exposed: bool,
     renderer: Renderer,
 ) -> Router {
     Router::new()
@@ -272,13 +325,17 @@ pub(crate) fn content_router(
         .fallback(|| async { not_found() })
         .layer(map_response(harden_content))
         .layer(from_fn(move |req, next| {
-            require_loopback_host(content_port, req, next)
+            check_host(
+                ui_port,
+                content_port,
+                content_port,
+                exposed,
+                false,
+                req,
+                next,
+            )
         }))
-        .with_state(ContentState {
-            db_path,
-            ui_port,
-            renderer,
-        })
+        .with_state(ContentState { db_path, renderer })
 }
 
 /// What a request resolved to.
@@ -320,6 +377,7 @@ fn lookup(db_path: &Path, id: &str, rev: i64, path: &str) -> Result<Option<Found
 
 async fn content(
     State(s): State<ContentState>,
+    Extension(o): Extension<ui::Origins>,
     UrlPath((id, rev, path)): UrlPath<(String, String, String)>,
 ) -> Response {
     let Some(rev) = rev.parse::<i64>().ok().filter(|r| *r >= 1) else {
@@ -336,7 +394,7 @@ async fn content(
     match found {
         Found::File { file, bundle } => {
             let csp = if bundle {
-                html_csp(s.ui_port)
+                html_csp(&o.ui)
             } else {
                 SCRIPTLESS_CSP.to_string()
             };
@@ -349,11 +407,11 @@ async fn content(
     }
 }
 
-fn html_csp(ui_port: u16) -> String {
+fn html_csp(ui_origin: &str) -> String {
     format!(
         "sandbox allow-scripts; default-src 'none'; script-src 'self' 'unsafe-inline'; \
          style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; \
-         connect-src 'none'; frame-ancestors http://127.0.0.1:{ui_port}"
+         connect-src 'none'; frame-ancestors {ui_origin}"
     )
 }
 
@@ -427,8 +485,8 @@ mod tests {
             let db = dir.path().join("c.db");
             db::open(&db).unwrap();
             Fixture {
-                content: content_router(db.clone(), 7879, 7878, Renderer::start()),
-                ui: ui_router(db.clone(), "rev", 7878, 7879),
+                content: content_router(db.clone(), 7879, 7878, false, Renderer::start()),
+                ui: ui_router(db.clone(), "rev", 7878, 7879, false),
                 db,
                 _dir: dir,
             }
@@ -498,13 +556,13 @@ mod tests {
 
     #[test]
     fn binds_loopback_only() {
-        let l = bind_loopback(0).unwrap();
+        let l = bind(std::net::Ipv4Addr::LOCALHOST.into(), 0).unwrap();
         assert_eq!(
             l.local_addr().unwrap().ip(),
-            std::net::IpAddr::V4(Ipv4Addr::LOCALHOST)
+            std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
         );
         let port = l.local_addr().unwrap().port();
-        let e = bind_loopback(port).unwrap_err();
+        let e = bind(std::net::Ipv4Addr::LOCALHOST.into(), port).unwrap_err();
         assert!(e.to_string().contains(&port.to_string()), "{e}");
         assert_eq!(e.exit_code(), 1);
     }
@@ -579,7 +637,7 @@ mod tests {
     async fn mermaid_renders_on_demand_with_one_engine() {
         let f = Fixture::new();
         let renderer = Renderer::start();
-        let content = content_router(f.db.clone(), 7879, 7878, renderer.clone());
+        let content = content_router(f.db.clone(), 7879, 7878, false, renderer.clone());
         let id = f.submit(
             "m",
             Kind::Diagram,
@@ -1439,6 +1497,50 @@ mod tests {
                 .unwrap();
             assert_eq!(res.status(), StatusCode::FORBIDDEN, "missing host");
         }
+    }
+
+    #[test]
+    fn exposed_host_names_are_well_formed_and_port_bound() {
+        for ok in [
+            "nas.lan:7878",
+            "192.168.1.5:7878",
+            "[fd00::1]:7878",
+            "A-b.c:7878",
+        ] {
+            assert!(host_name(ok, 7878, true).is_some(), "{ok}");
+        }
+        for bad in [
+            "nas.lan:7879",
+            "nas.lan",
+            ":7878",
+            "[]:7878",
+            "a b:7878",
+            "a;b:7878",
+            "a\"b:7878",
+            "a,b:7878",
+            "a/b:7878",
+        ] {
+            assert!(host_name(bad, 7878, true).is_none(), "{bad}");
+        }
+        assert!(host_name("nas.lan:7878", 7878, false).is_none());
+    }
+
+    #[tokio::test]
+    async fn exposed_router_follows_the_requests_host() {
+        let f = Fixture::new();
+        let ui = ui_router(f.db.clone(), "rev", 7878, 7879, true);
+        let content = content_router(f.db.clone(), 7879, 7878, true, Renderer::start());
+        let (st, hd, _) = get(&ui, "nas.lan:7879", "/").await;
+        assert_eq!(st, StatusCode::OK);
+        assert!(
+            h(&hd, "content-security-policy").contains("img-src http://nas.lan:7878;"),
+            "{hd:?}"
+        );
+        assert_eq!(get(&ui, "nas.lan:7878", "/").await.0, StatusCode::FORBIDDEN);
+        assert_eq!(
+            get(&content, "nas.lan:7878", "/a/x/1/y").await.0,
+            StatusCode::NOT_FOUND
+        );
     }
 
     #[tokio::test]

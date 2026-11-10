@@ -11,4 +11,6 @@ The UI renders markdown with raw HTML dropped, escapes comment text, author name
 
 Both listeners refuse any request whose `Host` is not exactly `127.0.0.1:<port>`, `localhost:<port>` or `[::1]:<port>` for that listener's own port (403, before routing). This defeats DNS rebinding, where a hostile name re-resolved to loopback would otherwise pass the UI's same-origin `Origin == Host` check.
 
+With an explicit non-loopback `--bind`, the server cannot know its own names, so both listeners accept any well-formed hostname or IP literal on their own port, and the content origin and `frame-ancestors` use the hostname the browser requested. The rebinding guard is then gone and the UI is unauthenticated; that is the operator's choice.
+
 We chose this over serving everything from one origin (a script in a Bundle could then act as the UI) and over `srcdoc` (relative asset paths would not resolve to Bundle files). The CSP `sandbox` header goes on every response, not just iframed ones, because a spike showed a script inside an SVG opened directly ran when the header allowed scripts; only html needs `allow-scripts`. The cost is a second port to configure and a Bundle that cannot use a CDN. Spike code is in `.wayfinder/assets/web-safety-spike/`.

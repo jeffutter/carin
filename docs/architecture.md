@@ -35,7 +35,7 @@ The core is the only code that opens the database, so CLI and server cannot conf
 | Process | What it does |
 | --- | --- |
 | `cairn <command>` | Opens the database, does one thing, prints JSON, exits. `comment list --wait` polls the database every 500 ms (a constant in core). |
-| `cairn serve` | Two axum listeners in one process (`tokio::try_join!`), both on `127.0.0.1`: the UI and `/api/v1` on `--port` (default 7878), untrusted content on `--content-port` (default port + 1). No `--bind`. A taken port is a clear non-zero exit, never a random port, because the CSP `frame-ancestors` needs a predictable origin. |
+| `cairn serve` | Two axum listeners in one process (`tokio::try_join!`), both on `127.0.0.1` unless `--bind <ip>` (env `CAIRN_BIND`) says otherwise: the UI and `/api/v1` on `--port` (default 7878), untrusted content on `--content-port` (default port + 1). A non-loopback bind (e.g. `0.0.0.0`) accepts any well-formed `Host` on the listener's port and builds the content origin and CSPs from the requesting `Host`, so the loopback DNS-rebinding guard no longer applies and there is no authentication: anyone who can reach the ports can read and comment. A taken port is a clear non-zero exit, never a random port, because the CSP `frame-ancestors` needs a predictable origin. |
 
 CLI and server write the same database concurrently. WAL mode makes that safe; writes wait up to a 5 s busy timeout ([ADR 0007](adr/0007-immediate-write-transactions-and-optional-base-check.md)).
 

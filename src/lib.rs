@@ -114,11 +114,12 @@ pub fn run(command: Command, ctx: &Context, fmt: Format) -> Result<u8, Error> {
     if let Command::Serve {
         port,
         content_port,
+        bind,
         reviewer_name,
     } = command
     {
         let (ui, content) = serve::resolve_ports(port, content_port)?;
-        return serve::serve(&ctx.db_path, ui, content, &reviewer_name, fmt);
+        return serve::serve(&ctx.db_path, bind, ui, content, &reviewer_name, fmt);
     }
     if let Command::Skill { check } = command {
         return skill::run(check.as_deref());

@@ -1207,7 +1207,7 @@ mod tests {
             let db = dir.path().join("c.db");
             db::open(&db).unwrap();
             Fixture {
-                app: crate::serve::ui_router(db.clone(), "rev", 7879, 7878),
+                app: crate::serve::ui_router(db.clone(), "rev", 7879, 7878, false),
                 db,
                 _dir: dir,
             }
@@ -1710,7 +1710,7 @@ mod tests {
         // A directory where the database file should be: open fails.
         let bad = f._dir.path().join("dir");
         std::fs::create_dir(&bad).unwrap();
-        let app = crate::serve::ui_router(bad, "rev", 7879, 7878);
+        let app = crate::serve::ui_router(bad, "rev", 7879, 7878, false);
         let res = app
             .oneshot(
                 Request::get("/api/v1/artifacts")

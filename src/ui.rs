@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
+use axum::Extension;
 use axum::Form;
 use axum::Router;
 use axum::extract::{Path as UrlPath, Query, State};
@@ -53,8 +54,7 @@ static JS_HASH: LazyLock<String> = LazyLock::new(|| short_hash(APP_JS));
 /// The UI's own CSP. Script and style only from this origin (no inline), no
 /// framing except by itself, Artifact images and frames only from the content
 /// origin.
-pub(crate) fn csp(content_port: u16) -> HeaderValue {
-    let content = format!("http://127.0.0.1:{content_port}");
+pub(crate) fn csp(content: &str) -> HeaderValue {
     HeaderValue::from_str(&format!(
         "default-src 'none'; script-src 'self'; style-src 'self'; img-src {content}; \
          connect-src 'self'; frame-src {content}; form-action 'self'; base-uri 'none'; \
@@ -67,14 +67,15 @@ pub(crate) fn csp(content_port: u16) -> HeaderValue {
 pub(crate) struct UiState {
     pub db_path: PathBuf,
     pub reviewer: String,
-    /// Port of the untrusted content listener, where frames and images load from.
-    pub content_port: u16,
 }
 
-impl UiState {
-    fn origin(&self) -> String {
-        format!("http://127.0.0.1:{}", self.content_port)
-    }
+/// The two origins as the requesting browser addresses this server: the same
+/// hostname it used for the UI, on each listener's port. Set per request by
+/// the Host check in `serve`.
+#[derive(Clone)]
+pub(crate) struct Origins {
+    pub ui: String,
+    pub content: String,
 }
 
 pub(crate) fn router(state: UiState) -> Router {
@@ -716,6 +717,7 @@ struct PageParams {
 
 async fn artifact_page(
     State(s): State<UiState>,
+    Extension(o): Extension<Origins>,
     UrlPath(idrev): UrlPath<String>,
     Query(q): Query<PageParams>,
 ) -> Response {
@@ -732,7 +734,7 @@ async fn artifact_page(
         };
     }
     let ctx = reviewer_ctx(&s.db_path, &s.reviewer);
-    let origin = s.origin();
+    let origin = o.content;
     let page = match blocking(&s.db_path, move |c| load_page(&ctx, c, &origin, &id, rev)).await {
         Ok(p) => p,
         Err(r) => return r.into_response(),
@@ -756,6 +758,7 @@ struct LiveParams {
 /// redraw: 204, which htmx does not swap.
 async fn live_fragment(
     State(s): State<UiState>,
+    Extension(o): Extension<Origins>,
     UrlPath(idrev): UrlPath<String>,
     Query(q): Query<LiveParams>,
 ) -> Response {
@@ -764,7 +767,7 @@ async fn live_fragment(
         Err(e) => return e.into_response(),
     };
     let ctx = reviewer_ctx(&s.db_path, &s.reviewer);
-    let origin = s.origin();
+    let origin = o.content;
     let r = blocking(&s.db_path, move |c| {
         let Some(viewing) = viewing_rev(c, &id, rev)? else {
             return Ok(None);
@@ -807,7 +810,7 @@ fn check_post(headers: &HeaderMap) -> Result<(), Failure> {
 /// Run a write on the viewed Revision of an Artifact, then answer with the
 /// redrawn live region. `act` gets the connection, the Reviewer's context, the
 /// Artifact id and the viewed Revision.
-async fn mutate<F>(s: &UiState, headers: &HeaderMap, idrev: &str, act: F) -> Response
+async fn mutate<F>(s: &UiState, o: &Origins, headers: &HeaderMap, idrev: &str, act: F) -> Response
 where
     F: FnOnce(&mut Connection, &Context, &str, i64) -> Result<(), Error> + Send + 'static,
 {
@@ -819,7 +822,7 @@ where
         Err(e) => return e.into_response(),
     };
     let ctx = reviewer_ctx(&s.db_path, &s.reviewer);
-    let origin = s.origin();
+    let origin = o.content.clone();
     let r = blocking(&s.db_path, move |c| {
         let Some(viewing) = viewing_rev(c, &id, rev)? else {
             return Ok(None);
@@ -890,11 +893,12 @@ struct NewThread {
 
 async fn new_thread(
     State(s): State<UiState>,
+    Extension(o): Extension<Origins>,
     UrlPath(idrev): UrlPath<String>,
     headers: HeaderMap,
     Form(f): Form<NewThread>,
 ) -> Response {
-    mutate(&s, &headers, &idrev, move |c, ctx, id, viewing| {
+    mutate(&s, &o, &headers, &idrev, move |c, ctx, id, viewing| {
         if f.whole.is_some() && (f.line.is_some() || f.section.is_some()) {
             return Err(Error::Usage("whole excludes line and section".into()));
         }
@@ -914,11 +918,12 @@ struct ReplyForm {
 
 async fn reply(
     State(s): State<UiState>,
+    Extension(o): Extension<Origins>,
     UrlPath((idrev, thread)): UrlPath<(String, i64)>,
     headers: HeaderMap,
     Form(f): Form<ReplyForm>,
 ) -> Response {
-    mutate(&s, &headers, &idrev, move |c, ctx, id, _| {
+    mutate(&s, &o, &headers, &idrev, move |c, ctx, id, _| {
         // A reply stays on its Thread's Revision, so name the Artifact only.
         comments::add(
             c,
@@ -940,11 +945,12 @@ struct StatusForm {
 
 async fn set_status(
     State(s): State<UiState>,
+    Extension(o): Extension<Origins>,
     UrlPath((idrev, thread)): UrlPath<(String, i64)>,
     headers: HeaderMap,
     Form(f): Form<StatusForm>,
 ) -> Response {
-    mutate(&s, &headers, &idrev, move |c, _, id, _| {
+    mutate(&s, &o, &headers, &idrev, move |c, _, id, _| {
         if !matches!(f.status.as_str(), "open" | "resolved") {
             return Err(Error::Usage("bad status".into()));
         }

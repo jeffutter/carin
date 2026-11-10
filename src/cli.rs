@@ -67,7 +67,7 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Serve the web UI and the untrusted-content port on loopback
+    /// Serve the web UI and the untrusted-content port (loopback unless --bind)
     Serve {
         /// UI port
         #[arg(long, env = "CAIRN_PORT", default_value_t = 7878,
@@ -77,6 +77,10 @@ pub enum Command {
         #[arg(long, env = "CAIRN_CONTENT_PORT",
               value_parser = clap::value_parser!(u16).range(1..))]
         content_port: Option<u16>,
+        /// Address to listen on; 0.0.0.0 exposes the UI to the network, and
+        /// then anyone who can reach the ports can read and comment
+        #[arg(long, env = "CAIRN_BIND", default_value = "127.0.0.1")]
+        bind: std::net::IpAddr,
         /// Author name the UI posts under (always with role reviewer)
         #[arg(long, env = "CAIRN_REVIEWER", default_value = "reviewer")]
         reviewer_name: String,

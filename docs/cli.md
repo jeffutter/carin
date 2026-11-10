@@ -112,11 +112,11 @@ Filters: `--kind`, `--session`, `--mine`, `--open` (only Artifacts with an open 
 
 ### serve
 
-`serve` runs axum on `127.0.0.1` only: `--port` (default 7878, env `CAIRN_PORT`) for the UI and API, `--content-port` (default port + 1, env `CAIRN_CONTENT_PORT`) for untrusted content. `--reviewer-name` (env `CAIRN_REVIEWER`, default `reviewer`) is the author the UI posts under, always with role reviewer, separate from the global `--author`. Port 0 is rejected (exit 2), as are equal ports and a UI port of 65535 without `--content-port`. A taken port exits 1 with a message naming it; both ports are bound before anything is served.
+`serve` runs axum on `127.0.0.1` unless `--bind <ip>` (env `CAIRN_BIND`) names another address; `--bind 0.0.0.0` listens on every interface, with no authentication and without the loopback `Host` guard ([ADR 0005](adr/0005-serve-untrusted-content-from-a-separate-origin.md)). `--port` (default 7878, env `CAIRN_PORT`) for the UI and API, `--content-port` (default port + 1, env `CAIRN_CONTENT_PORT`) for untrusted content. `--reviewer-name` (env `CAIRN_REVIEWER`, default `reviewer`) is the author the UI posts under, always with role reviewer, separate from the global `--author`. Port 0 is rejected (exit 2), as are equal ports and a UI port of 65535 without `--content-port`. A taken port exits 1 with a message naming it; both ports are bound before anything is served.
 
 ### view
 
-`view <id>[@rev]` prints `<base>/a/<id>[@rev]` and does not open a browser or check a server is running. The base comes from `--url`, then `CAIRN_URL`, then `http://127.0.0.1:<port>` with the port from `CAIRN_PORT` or 7878. The skill tells Agents to ask the human to run `cairn serve`.
+`view <id>[@rev]` prints `<base>/a/<id>[@rev]` and does not open a browser or check a server is running. The base comes from `--url`, then `CAIRN_URL`, then `http://127.0.0.1:<port>` with the port from `CAIRN_PORT` or 7878. After `serve --bind 0.0.0.0`, set `CAIRN_URL` (e.g. `http://nas.lan:7878`) so `view` prints a URL the Reviewer's browser can open. The skill tells Agents to ask the human to run `cairn serve`.
 
 ### skill
 
