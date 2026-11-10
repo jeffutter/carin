@@ -43,9 +43,12 @@ fn read_body(body: &str) -> Result<String, Error> {
 }
 
 fn selection(ctx: &Context) -> scope::Selection {
-    // An unreadable cwd just means nothing to detect.
-    let cwd = std::env::current_dir().unwrap_or_default();
-    scope::select(ctx.project.as_deref(), &cwd)
+    scope::select(ctx.project.as_deref(), &cwd())
+}
+
+/// An unreadable cwd just means nothing to detect.
+fn cwd() -> std::path::PathBuf {
+    std::env::current_dir().unwrap_or_default()
 }
 
 /// Run a command; the Ok value is the exit code (0, or 5 for a wait timeout).
@@ -153,6 +156,7 @@ pub fn run(command: Command, ctx: &Context) -> Result<u8, Error> {
                     all_projects,
                     all_worktrees,
                     project_root.as_deref(),
+                    &cwd(),
                 ),
             };
             let conn = db::open(&ctx.db_path)?;
@@ -258,6 +262,15 @@ fn run_comment(action: CommentAction, ctx: &Context) -> Result<u8, Error> {
                     "comment list takes a bare artifact id, not id@revision".into(),
                 ));
             }
+            if (target.is_some() || ctx.session_explicit.is_some())
+                && (all_projects || all_worktrees || project_root.is_some())
+            {
+                return Err(Error::Usage(
+                    "--all-projects/--all-worktrees/--project-root cannot be combined with an \
+                     artifact id or --session, which ignore Project scope"
+                        .into(),
+                ));
+            }
             let conn = db::open(&ctx.db_path)?;
             let q = comments::ListQuery {
                 artifact: target,
@@ -268,6 +281,7 @@ fn run_comment(action: CommentAction, ctx: &Context) -> Result<u8, Error> {
                     all_projects,
                     all_worktrees,
                     project_root.as_deref(),
+                    &cwd(),
                 ),
             };
             let (r, exit) = if wait {

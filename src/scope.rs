@@ -78,20 +78,43 @@ fn detect_git(cwd: &Path) -> Option<Scope> {
     parse_rev_parse(&String::from_utf8_lossy(&out.stdout))
 }
 
+/// A root path as stored and compared: a relative path is taken from `cwd`,
+/// then symlinks are resolved. A path that does not exist is normalized
+/// lexically instead.
+fn normalize_root(p: &str, cwd: &Path) -> String {
+    use std::path::Component;
+    let joined = cwd.join(p);
+    if let Ok(c) = std::fs::canonicalize(&joined) {
+        return c.to_string_lossy().into_owned();
+    }
+    // Not on disk: collapse `.` and `..` lexically (this also drops any
+    // trailing `/`).
+    let mut out = std::path::PathBuf::new();
+    for c in joined.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out.to_string_lossy().into_owned()
+}
+
 /// Resolve `--project` against the cwd.
 /// - unset: detect from the cwd;
 /// - empty or `none`: no scope;
-/// - an absolute path: that root (the Worktree is kept only if the cwd is in a
-///   Worktree of that same root);
+/// - a path (absolute, containing `/`, or starting with `.`): that root,
+///   relative paths taken from the cwd (the Worktree is kept only if the cwd is
+///   in a Worktree of that same root);
 /// - anything else: a name.
 pub fn select(project: Option<&str>, cwd: &Path) -> Selection {
     match project {
         None => detect_git(cwd).map_or(Selection::None, Selection::Scope),
         Some("") | Some("none") => Selection::None,
-        Some(p) if Path::new(p).is_absolute() => {
-            let root = std::fs::canonicalize(p)
-                .map(|c| c.to_string_lossy().into_owned())
-                .unwrap_or_else(|_| p.trim_end_matches('/').to_string());
+        Some(p) if Path::new(p).is_absolute() || p.contains('/') || p.starts_with('.') => {
+            let root = normalize_root(p, cwd);
             let worktree = detect_git(cwd)
                 .filter(|d| d.root == root)
                 .and_then(|d| d.worktree);
@@ -148,6 +171,7 @@ impl ScopeFilter {
         all_projects: bool,
         all_worktrees: bool,
         project_root: Option<&str>,
+        cwd: &Path,
     ) -> Self {
         let (mut name, mut root, worktree, scoped) = match sel {
             Selection::None => (None, None, None, false),
@@ -160,10 +184,7 @@ impl ScopeFilter {
             ),
         };
         if let Some(r) = project_root {
-            let canon = std::fs::canonicalize(r)
-                .map(|c| c.to_string_lossy().into_owned())
-                .unwrap_or_else(|_| r.trim_end_matches('/').to_string());
-            root = Some(canon);
+            root = Some(normalize_root(r, cwd));
             if scoped {
                 // The detected name belongs to the detected root.
                 name = None;
@@ -257,23 +278,61 @@ mod tests {
 
     #[test]
     fn filter_rules() {
+        let cwd = Path::new("/nonexistent");
         let sel = Selection::Scope(Scope {
             name: "p".into(),
             root: "/p".into(),
             worktree: Some("/wt".into()),
         });
-        let strict = ScopeFilter::build(&sel, false, false, None);
+        let strict = ScopeFilter::build(&sel, false, false, None, cwd);
         assert!(!strict.any_worktree);
         assert_eq!(strict.root.as_deref(), Some("/p"));
-        assert!(ScopeFilter::build(&sel, false, true, None).any_worktree);
-        let all = ScopeFilter::build(&sel, true, false, None);
+        assert!(ScopeFilter::build(&sel, false, true, None, cwd).any_worktree);
+        let all = ScopeFilter::build(&sel, true, false, None, cwd);
         assert_eq!((all.name, all.root), (None, None));
-        let narrowed = ScopeFilter::build(&sel, false, false, Some("/q"));
+        let narrowed = ScopeFilter::build(&sel, false, false, Some("/q"), cwd);
         assert_eq!(narrowed.name, None);
         assert_eq!(narrowed.root.as_deref(), Some("/q"));
         assert_eq!(
-            ScopeFilter::build(&Selection::None, false, false, None),
+            ScopeFilter::build(&Selection::None, false, false, None, cwd),
             ScopeFilter::unscoped()
+        );
+    }
+
+    #[test]
+    fn relative_project_paths_resolve_against_cwd() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = std::fs::canonicalize(dir.path()).unwrap();
+        std::fs::create_dir(cwd.join("repo")).unwrap();
+        let root = |s: Selection| match s {
+            Selection::Scope(s) => s.root,
+            other => panic!("expected a scope, got {other:?}"),
+        };
+        let here = cwd.to_string_lossy().into_owned();
+        assert_eq!(root(select(Some("."), &cwd)), here);
+        assert_eq!(
+            root(select(Some("./repo"), &cwd)),
+            cwd.join("repo").to_string_lossy()
+        );
+        assert_eq!(
+            root(select(Some("repo/"), &cwd)),
+            cwd.join("repo").to_string_lossy()
+        );
+        assert_eq!(
+            root(select(Some("../x"), &cwd.join("repo"))),
+            cwd.join("x").to_string_lossy()
+        );
+        assert_eq!(select(Some("repo"), &cwd), Selection::Name("repo".into()));
+    }
+
+    #[test]
+    fn build_resolves_relative_project_root_like_select() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = std::fs::canonicalize(dir.path()).unwrap();
+        let f = ScopeFilter::build(&Selection::None, false, false, Some("./repo"), &cwd);
+        assert_eq!(
+            f.root.as_deref(),
+            Some(cwd.join("repo").to_string_lossy().as_ref())
         );
     }
 }

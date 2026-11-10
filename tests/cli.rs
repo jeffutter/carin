@@ -1824,6 +1824,29 @@ mod scoping {
     }
 
     #[test]
+    fn relative_project_is_a_path_and_comment_list_rejects_ignored_scope_flags() {
+        let (_g, t) = tmp();
+        let db = t.join("c.db");
+        let root = repo(&t, "proj");
+        // `--project .` is the cwd's root, not a name.
+        let id = submit(&db, &root, "d", &["--project", "."]);
+        let v = ok(&db, &root, &["list", "--project", "."]);
+        assert_eq!(names(&v), ["d.md"]);
+        let v = ok(&db, &t, &["list", "--project", "./proj"]);
+        assert_eq!(names(&v), ["d.md"]);
+
+        // Scope flags that an explicit Artifact or Session would ignore are errors.
+        for args in [
+            vec!["comment", "list", &id, "--all-projects"],
+            vec!["comment", "list", &id, "--all-worktrees"],
+            vec!["--session", "s", "comment", "list", "--project-root", "x"],
+        ] {
+            let o = run(&db, &root, &args);
+            assert_eq!(o.status.code(), Some(2), "{args:?}");
+        }
+    }
+
+    #[test]
     fn name_matching_several_roots_is_narrowed_by_project_root() {
         let (_g, t) = tmp();
         let db = t.join("c.db");
