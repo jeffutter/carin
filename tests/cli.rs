@@ -2711,3 +2711,140 @@ mod diagrams {
         );
     }
 }
+
+mod serve {
+    use super::cairn;
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::process::Stdio;
+
+    fn free_port() -> u16 {
+        TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
+    }
+
+    fn serve_cmd(db: &std::path::Path) -> std::process::Command {
+        let mut c = cairn();
+        for v in ["CAIRN_PORT", "CAIRN_CONTENT_PORT", "CAIRN_REVIEWER"] {
+            c.env_remove(v);
+        }
+        c.arg("--db").arg(db).arg("serve");
+        c
+    }
+
+    #[test]
+    fn taken_ui_port_exits_nonzero_naming_the_port() {
+        let dir = tempfile::tempdir().unwrap();
+        let held = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = held.local_addr().unwrap().port();
+        let content = free_port();
+        let out = serve_cmd(&dir.path().join("c.db"))
+            .args([
+                "--port",
+                &port.to_string(),
+                "--content-port",
+                &content.to_string(),
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&out.stderr).contains(&port.to_string()));
+    }
+
+    #[test]
+    fn taken_content_port_exits_nonzero_naming_the_port() {
+        let dir = tempfile::tempdir().unwrap();
+        let held = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = held.local_addr().unwrap().port();
+        let ui = free_port();
+        let out = serve_cmd(&dir.path().join("c.db"))
+            .args([
+                "--port",
+                &ui.to_string(),
+                "--content-port",
+                &port.to_string(),
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&out.stderr).contains(&port.to_string()));
+    }
+
+    #[test]
+    fn port_zero_is_a_usage_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = serve_cmd(&dir.path().join("c.db"))
+            .args(["--port", "0"])
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(2));
+    }
+
+    #[test]
+    fn headers_cross_the_real_socket() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("c.db");
+        let page = dir.path().join("page");
+        std::fs::create_dir(&page).unwrap();
+        std::fs::write(page.join("index.html"), "<h1>hi</h1>").unwrap();
+        let sub = {
+            let mut c = cairn();
+            c.env_remove("CAIRN_PROJECT").arg("--db").arg(&db);
+            c.args(["submit"]).arg(&page).output().unwrap()
+        };
+        assert!(sub.status.success(), "{sub:?}");
+        let id = serde_json::from_slice::<serde_json::Value>(&sub.stdout).unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let (ui, content) = (free_port(), free_port());
+        let mut child = serve_cmd(&db)
+            .args([
+                "--port",
+                &ui.to_string(),
+                "--content-port",
+                &content.to_string(),
+            ])
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        // The startup line means both listeners are bound.
+        let mut line = Vec::new();
+        let mut b = [0u8; 1];
+        let out = child.stdout.as_mut().unwrap();
+        while out.read(&mut b).unwrap() == 1 && b[0] != b'\n' {
+            line.push(b[0]);
+        }
+        let startup: serde_json::Value = serde_json::from_slice(&line).unwrap();
+        assert_eq!(startup["content"], format!("http://127.0.0.1:{content}"));
+
+        let fetch = |port: u16, path: &str| {
+            let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            write!(
+                s,
+                "GET {path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+            )
+            .unwrap();
+            let mut r = String::new();
+            s.read_to_string(&mut r).unwrap();
+            r.to_ascii_lowercase()
+        };
+        let r = fetch(content, &format!("/a/{id}/1/index.html"));
+        let ui_r = fetch(ui, &format!("/a/{id}/1/index.html"));
+        child.kill().ok();
+        assert!(r.starts_with("http/1.1 200"), "{r}");
+        assert!(r.contains("x-content-type-options: nosniff"), "{r}");
+        assert!(r.contains("content-type: text/html"), "{r}");
+        assert!(
+            r.contains(&format!("frame-ancestors http://127.0.0.1:{ui}")),
+            "{r}"
+        );
+        assert!(ui_r.starts_with("http/1.1 404"), "{ui_r}");
+        assert!(!ui_r.contains("<h1>hi</h1>"), "{ui_r}");
+        child.wait().ok();
+    }
+}

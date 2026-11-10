@@ -91,7 +91,7 @@ Filters: `--kind`, `--session`, `--mine`, `--open` (only Artifacts with an open 
 
 ### serve
 
-`serve` runs axum on `127.0.0.1` only: `--port` (default 7878, env `CAIRN_PORT`) for the UI and API, `--content-port` (default port + 1, env `CAIRN_CONTENT_PORT`) for untrusted content. `--reviewer-name` (env `CAIRN_REVIEWER`, default `reviewer`) is the author the UI posts under, always with role reviewer, separate from the global `--author`.
+`serve` runs axum on `127.0.0.1` only: `--port` (default 7878, env `CAIRN_PORT`) for the UI and API, `--content-port` (default port + 1, env `CAIRN_CONTENT_PORT`) for untrusted content. `--reviewer-name` (env `CAIRN_REVIEWER`, default `reviewer`) is the author the UI posts under, always with role reviewer, separate from the global `--author`. Port 0 is rejected (exit 2), as are equal ports and a UI port of 65535 without `--content-port`. A taken port exits 1 with a message naming it; both ports are bound before anything is served.
 
 ### view
 

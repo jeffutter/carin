@@ -30,9 +30,11 @@ An optional per-Artifact "last seen" marker in sqlite can mark Artifacts with a 
 Everything an Agent supplies is untrusted. The model is in [ADR 0005](adr/0005-serve-untrusted-content-from-a-separate-origin.md); the rules:
 
 - Two listeners, one process: the UI port, and an untrusted-content port (`--content-port`, default UI port + 1). They are different origins. The UI never serves Artifact bytes.
+- `cairn serve` prints one JSON line on stdout once both ports are bound: `{"ui":"http://127.0.0.1:P","content":"http://127.0.0.1:Q","reviewer":"..."}`.
 - Untrusted bytes live at `/a/<id>/<rev>/<path>` on the content port, always pinned to a Revision.
 - **html**: shown in `<iframe src=...>` with `sandbox="allow-scripts"` and never `allow-same-origin`. CSP: `sandbox allow-scripts; default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'none'; frame-ancestors <ui origin>`. A Bundle is self-contained: no remote images, scripts, fonts or `fetch`.
-- **Images and diagram SVGs**: shown only via `<img>`, with CSP `sandbox; default-src 'none'; style-src 'unsafe-inline'` (no `allow-scripts`). Mermaid is rendered to SVG on demand and served the same way. Diagrams stay fixed light-neutral inside `<img>`.
+- **Images and diagram SVGs**: shown only via `<img>`, with CSP `sandbox; default-src 'none'; style-src 'unsafe-inline'` (no `allow-scripts`). Mermaid is rendered to SVG on demand and served the same way, at the fixed path `/a/<id>/<rev>/diagram.svg` of its Revision; the stored `.mmd` source is never served. A render failure is a fixed 500 with no source or renderer text. Diagrams stay fixed light-neutral inside `<img>`.
+- **markdown** Artifacts are 404 on the content port; the UI renders them. An unknown Artifact, Revision or path, a malformed Revision (`latest` is not an alias) and a wrong-Kind path all return the same fixed `not found` body.
 - **Every** untrusted response carries `X-Content-Type-Options: nosniff`, a CSP, and a `Content-Type` from the allowlisted media type stored at submit.
 - **The UI itself** renders markdown with raw HTML dropped, escapes comment text, author names and titles, strips `javascript:` and `data:` links, opens links with `rel="noopener noreferrer"`, and sets its own strict CSP with `frame-ancestors 'self'`.
 - **Markdown embeds** (`cairn:`) render as `<img>` from the content origin. `http:`, `data:` and relative image URLs show as alt text. An embed whose target is deleted shows a missing-image placeholder.

@@ -59,6 +59,20 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Serve the web UI and the untrusted-content port on loopback
+    Serve {
+        /// UI port
+        #[arg(long, env = "CAIRN_PORT", default_value_t = 7878,
+              value_parser = clap::value_parser!(u16).range(1..))]
+        port: u16,
+        /// Untrusted-content port (default: the UI port + 1)
+        #[arg(long, env = "CAIRN_CONTENT_PORT",
+              value_parser = clap::value_parser!(u16).range(1..))]
+        content_port: Option<u16>,
+        /// Author name the UI posts under (always with role reviewer)
+        #[arg(long, env = "CAIRN_REVIEWER", default_value = "reviewer")]
+        reviewer_name: String,
+    },
     /// Store a new Artifact and print its ref
     Submit {
         /// File, directory (an html Bundle) or `-` for stdin

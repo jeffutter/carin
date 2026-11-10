@@ -496,6 +496,44 @@ pub fn get_files(
     Ok((Kind::parse(&kind)?, files))
 }
 
+/// An Artifact's Kind, or None when there is no such Artifact.
+pub fn kind_of(conn: &Connection, id: &str) -> Result<Option<Kind>, Error> {
+    conn.query_row("SELECT kind FROM artifacts WHERE id = ?1", [id], |r| {
+        r.get::<_, String>(0)
+    })
+    .optional()
+    .map_err(db_err)?
+    .map(|k| Kind::parse(&k))
+    .transpose()
+}
+
+/// One file of a Revision by exact stored path, or None. The lookup is an
+/// equality match on the database column, so a request path can never reach
+/// the filesystem.
+pub fn get_file(
+    conn: &Connection,
+    id: &str,
+    revision: i64,
+    path: &str,
+) -> Result<Option<StoredFile>, Error> {
+    conn.query_row(
+        "SELECT f.path, f.media_type, f.size, b.bytes FROM revision_files f
+         JOIN blobs b ON b.sha256 = f.sha256
+         WHERE f.artifact_id = ?1 AND f.revision = ?2 AND f.path = ?3",
+        params![id, revision, path],
+        |r| {
+            Ok(StoredFile {
+                path: r.get(0)?,
+                media_type: r.get(1)?,
+                size: r.get(2)?,
+                bytes: r.get(3)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(db_err)
+}
+
 /// Content of the single file of an Artifact's Revision (latest by default).
 pub fn get(conn: &Connection, id: &str, revision: Option<i64>) -> Result<Vec<u8>, Error> {
     let exists: bool = conn

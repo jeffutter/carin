@@ -130,6 +130,16 @@ pub fn engine_starts() -> usize {
     ENGINE_STARTS.load(Ordering::SeqCst)
 }
 
+thread_local! {
+    static THREAD_STARTS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Engines started by the calling thread (for the server's one-engine test).
+#[cfg(test)]
+pub(crate) fn engine_starts_on_thread() -> usize {
+    THREAD_STARTS.with(Cell::get)
+}
+
 struct Engine {
     // Kept alive for the context.
     _rt: Runtime,
@@ -166,6 +176,7 @@ impl Engine {
         })
         .map_err(|e| Error::Unexpected(format!("mermaid engine: cannot load Pele: {e}")))?;
         ENGINE_STARTS.fetch_add(1, Ordering::SeqCst);
+        THREAD_STARTS.with(|c| c.set(c.get() + 1));
         Ok(Engine {
             _rt: rt,
             ctx,
@@ -249,7 +260,7 @@ fn outcome(ctx: &Ctx<'_>, r: rquickjs::Result<String>) -> JsOutcome {
 
 /// Render Mermaid source to SVG. Options are fixed here and never come from
 /// the author: links and images off, Pele's default light-neutral variables.
-fn render_mermaid(src: &str) -> Result<String, Error> {
+pub(crate) fn render_mermaid(src: &str) -> Result<String, Error> {
     with_engine(|ctx| {
         let set: rquickjs::Result<()> = ctx.globals().set("__cairn_src", src);
         if let Err(e) = set {

@@ -12,6 +12,7 @@ pub mod kind;
 pub mod limits;
 pub mod scope;
 pub mod sections;
+pub mod serve;
 
 use std::io::{Read, Write};
 
@@ -80,6 +81,15 @@ fn cwd() -> std::path::PathBuf {
 pub fn run(command: Command, ctx: &Context) -> Result<u8, Error> {
     if let Command::Comment { action } = command {
         return run_comment(action, ctx);
+    }
+    if let Command::Serve {
+        port,
+        content_port,
+        reviewer_name,
+    } = command
+    {
+        let (ui, content) = serve::resolve_ports(port, content_port)?;
+        return serve::serve(&ctx.db_path, ui, content, &reviewer_name);
     }
     match command {
         Command::Submit {
@@ -245,7 +255,7 @@ pub fn run(command: Command, ctx: &Context) -> Result<u8, Error> {
             println!("{}", serde_json::json!({ "deleted": deleted }));
             Ok(0)
         }
-        Command::Comment { .. } => unreachable!("handled above"),
+        Command::Comment { .. } | Command::Serve { .. } => unreachable!("handled above"),
         Command::Outline { target } => {
             let (id, rev) = artifact::parse_target(&target)?;
             let conn = db::open(&ctx.db_path)?;
