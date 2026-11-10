@@ -72,6 +72,59 @@ pub fn run(command: Command, ctx: &Context) -> Result<(), Error> {
             println!("{}", serde_json::to_string(&r).expect("ref serializes"));
             Ok(())
         }
+        Command::List {
+            kind,
+            mine,
+            open,
+            older_than,
+            limit,
+            text,
+        } => {
+            let older_than_secs = older_than
+                .as_deref()
+                .map(artifact::parse_duration)
+                .transpose()?;
+            let (session, author) = match (&ctx.session_explicit, mine) {
+                (Some(s), true) => (Some(s.clone()), None),
+                (None, true) => match &ctx.session {
+                    Some(s) => (Some(s.clone()), None),
+                    None => (None, Some(ctx.author.clone())),
+                },
+                (explicit, false) => (explicit.clone(), None),
+            };
+            let filter = artifact::ListFilter {
+                kind,
+                session,
+                author,
+                open,
+                older_than_secs,
+                limit,
+            };
+            let conn = db::open(&ctx.db_path)?;
+            let rows = artifact::list(&conn, &filter)?;
+            if text {
+                print!("{}", list_table(&rows));
+            } else {
+                println!("{}", serde_json::json!({ "artifacts": rows }));
+            }
+            Ok(())
+        }
+        Command::Delete { ids, yes } => {
+            if !yes {
+                return Err(Error::Usage(
+                    "delete is permanent: pass --yes to confirm".into(),
+                ));
+            }
+            if let Some(id) = ids.iter().find(|i| i.contains('@')) {
+                return Err(Error::Usage(format!(
+                    "delete takes bare artifact ids, not {id:?}"
+                )));
+            }
+            let mut conn = db::open(&ctx.db_path)?;
+            let deleted = artifact::delete(&mut conn, &ids)?;
+            println!("{}", serde_json::json!({ "deleted": deleted }));
+            Ok(())
+        }
         Command::Get { target } => {
             let (id, rev) = artifact::parse_target(&target)?;
             let conn = db::open(&ctx.db_path)?;
@@ -82,4 +135,45 @@ pub fn run(command: Command, ctx: &Context) -> Result<(), Error> {
                 .map_err(|e| Error::Unexpected(format!("write failed: {e}")))
         }
     }
+}
+
+fn list_table(rows: &[artifact::ListRow]) -> String {
+    let header = [
+        "ID", "KIND", "NAME", "REV", "OPEN", "AUTHOR", "BYTES", "UPDATED", "PROJECT", "WORKTREE",
+    ];
+    let mut table: Vec<Vec<String>> = vec![header.iter().map(|s| s.to_string()).collect()];
+    for r in rows {
+        table.push(vec![
+            r.id.clone(),
+            r.kind.clone(),
+            r.name.clone(),
+            r.latest_revision.to_string(),
+            r.open_threads.to_string(),
+            r.author.clone(),
+            r.bytes.to_string(),
+            r.updated_at.clone(),
+            r.project.clone().unwrap_or_else(|| "-".into()),
+            r.worktree.clone().unwrap_or_else(|| "-".into()),
+        ]);
+    }
+    let widths: Vec<usize> = (0..header.len())
+        .map(|c| {
+            table
+                .iter()
+                .map(|row| row[c].chars().count())
+                .max()
+                .unwrap_or(0)
+        })
+        .collect();
+    let mut out = String::new();
+    for row in &table {
+        let line: Vec<String> = row
+            .iter()
+            .zip(&widths)
+            .map(|(cell, w)| format!("{cell:<w$}"))
+            .collect();
+        out.push_str(line.join("  ").trim_end());
+        out.push('\n');
+    }
+    out
 }

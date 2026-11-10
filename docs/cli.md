@@ -73,11 +73,13 @@ One Rust table (an enum with descriptions) drives the CLI error handling and the
 
 Newest activity first. Each row: id, Kind, name, latest Revision, open Thread count, author, stored bytes, last-updated time, and project and worktree.
 
+Output is `{"artifacts": [...]}`. Stored bytes is the sum of the distinct blobs any Revision of the Artifact references. `--session` (the global flag, not the `CLAUDE_CODE_SESSION_ID` fallback) and `--mine` match the Session or author of Revision 1; `--mine` uses the caller's Session if it has one, else its author. `--older-than` takes `30d`, `12h`, `90m`, `45s` or `2w` and compares last-updated. `--text` columns: id, kind, name, rev, open, author, bytes, updated, project, worktree (`-` for null).
+
 Filters: `--kind`, `--session`, `--mine`, `--open`, `--older-than <duration>`, `--limit` (default 50), plus the scoping flags above. No cursor in v1. Defaults to the detected scope; unscoped outside a project.
 
 ### delete
 
-`delete <id>... --yes`. Several ids; no prompt and no TTY detection. Removes everything for each Artifact in one transaction ([data-model.md](data-model.md#revisions)).
+`delete <id>... --yes`. Several ids; no prompt and no TTY detection. Removes everything for each Artifact in one transaction ([data-model.md](data-model.md#revisions)). Without `--yes` it exits 2; an unknown id exits 3 and deletes nothing. Prints `{"deleted": [ids]}`.
 
 ### comment
 

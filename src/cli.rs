@@ -84,6 +84,36 @@ pub enum Command {
     },
     /// Print an Artifact's content: `abc123` or `abc123@2`
     Get { target: String },
+    /// List Artifacts, newest activity first
+    List {
+        /// Only this Kind
+        #[arg(long, value_enum)]
+        kind: Option<Kind>,
+        /// Only Artifacts created by the caller (its Session if it has one, else its author)
+        #[arg(long)]
+        mine: bool,
+        /// Only Artifacts with open Threads
+        #[arg(long)]
+        open: bool,
+        /// Only Artifacts last updated longer ago than this: 30d, 12h, 90m, 45s, 2w
+        #[arg(long, value_name = "DURATION")]
+        older_than: Option<String>,
+        /// Maximum rows
+        #[arg(long, default_value_t = 50, value_parser = clap::value_parser!(i64).range(1..))]
+        limit: i64,
+        /// Print a table instead of JSON
+        #[arg(long)]
+        text: bool,
+    },
+    /// Delete Artifacts with all their Revisions
+    Delete {
+        /// Artifact ids
+        #[arg(required = true, num_args = 1..)]
+        ids: Vec<String>,
+        /// Confirm the deletion (there is no prompt)
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 /// Global flags after env fallbacks and defaults.
@@ -92,6 +122,10 @@ pub struct Context {
     pub role: Role,
     pub author: String,
     pub session: Option<String>,
+    /// The session given by `--session` or `CAIRN_SESSION`, without the
+    /// `CLAUDE_CODE_SESSION_ID` fallback. `list --session` filters on this,
+    /// so running inside Claude Code does not filter by default.
+    pub session_explicit: Option<String>,
     pub db_path: PathBuf,
     pub project: Option<String>,
 }
@@ -105,11 +139,13 @@ impl Cli {
     /// `CLAUDE_CODE_SESSION_ID`, passed in so tests need not touch the env.
     pub fn resolve(self, fallback_session: Option<String>) -> (Context, Command) {
         let author = non_empty(self.author).unwrap_or_else(|| self.role.as_str().to_string());
-        let session = non_empty(self.session).or(non_empty(fallback_session));
+        let session_explicit = non_empty(self.session);
+        let session = session_explicit.clone().or(non_empty(fallback_session));
         let ctx = Context {
             role: self.role,
             author,
             session,
+            session_explicit,
             db_path: resolve_db_path_from_env(self.db.as_deref()),
             // An empty value is meaningful ("disable detection"), so keep it.
             project: self.project,
@@ -182,6 +218,18 @@ mod tests {
         assert_eq!(ctx.author, "bot");
         assert_eq!(ctx.session.as_deref(), Some("s1"));
         assert_eq!(ctx.project.as_deref(), Some("p"));
+    }
+
+    #[test]
+    fn explicit_session_excludes_fallback() {
+        let ctx = cli(&["--db", "/d"]).resolve(Some("fallback".into())).0;
+        if std::env::var_os("CAIRN_SESSION").is_none() {
+            assert_eq!(ctx.session_explicit, None);
+        }
+        let ctx = cli(&["--db", "/d", "--session", "s"])
+            .resolve(Some("fallback".into()))
+            .0;
+        assert_eq!(ctx.session_explicit.as_deref(), Some("s"));
     }
 
     #[test]

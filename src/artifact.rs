@@ -210,6 +210,162 @@ pub fn get(conn: &Connection, id: &str, revision: Option<i64>) -> Result<Vec<u8>
     .ok_or_else(|| Error::NotFound(format!("no revision {id}@{rev}")))
 }
 
+/// Filters for [`list`]. `session` and `mine` look at Revision 1, the
+/// Revision that created the Artifact.
+pub struct ListFilter {
+    pub kind: Option<Kind>,
+    /// Created in this Session.
+    pub session: Option<String>,
+    /// Created by this author.
+    pub author: Option<String>,
+    /// Only Artifacts with open Threads.
+    pub open: bool,
+    /// Only Artifacts last updated more than this many seconds ago.
+    pub older_than_secs: Option<i64>,
+    pub limit: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ListRow {
+    pub id: String,
+    pub kind: String,
+    pub name: String,
+    pub latest_revision: i64,
+    pub open_threads: i64,
+    pub author: String,
+    /// Sum of the sizes of the distinct blobs any Revision of the Artifact
+    /// references: what the Artifact costs in the database file.
+    pub bytes: i64,
+    pub updated_at: String,
+    pub project: Option<String>,
+    pub worktree: Option<String>,
+}
+
+/// Artifacts, newest activity first.
+pub fn list(conn: &Connection, f: &ListFilter) -> Result<Vec<ListRow>, Error> {
+    // Threads arrive with the comments table (TASK-6); until then none are open.
+    const OPEN_THREADS: &str = "0";
+    let sql = format!(
+        "SELECT a.id, a.kind, a.name,
+                (SELECT MAX(number) FROM revisions WHERE artifact_id = a.id),
+                {OPEN_THREADS},
+                (SELECT author FROM revisions WHERE artifact_id = a.id ORDER BY number DESC LIMIT 1),
+                COALESCE((SELECT SUM(LENGTH(b.bytes)) FROM blobs b WHERE b.sha256 IN
+                    (SELECT sha256 FROM revision_files WHERE artifact_id = a.id)), 0),
+                a.updated_at, a.project_name, a.worktree
+         FROM artifacts a
+         WHERE (?1 IS NULL OR a.kind = ?1)
+           AND (?2 IS NULL OR EXISTS (SELECT 1 FROM revisions r
+                 WHERE r.artifact_id = a.id AND r.number = 1 AND r.session = ?2))
+           AND (?3 IS NULL OR EXISTS (SELECT 1 FROM revisions r
+                 WHERE r.artifact_id = a.id AND r.number = 1 AND r.author = ?3))
+           AND (?4 = 0 OR {OPEN_THREADS} > 0)
+           AND (?5 IS NULL OR a.updated_at < strftime('%Y-%m-%dT%H:%M:%fZ','now', ?5))
+         ORDER BY a.updated_at DESC, a.id DESC
+         LIMIT ?6"
+    );
+    let older = f.older_than_secs.map(|n| format!("-{n} seconds"));
+    let mut stmt = conn.prepare(&sql).map_err(db_err)?;
+    let rows = stmt
+        .query_map(
+            params![
+                f.kind.map(|k| k.as_str()),
+                f.session,
+                f.author,
+                f.open as i64,
+                older,
+                f.limit
+            ],
+            |r| {
+                Ok(ListRow {
+                    id: r.get(0)?,
+                    kind: r.get(1)?,
+                    name: r.get(2)?,
+                    latest_revision: r.get(3)?,
+                    open_threads: r.get(4)?,
+                    author: r.get(5)?,
+                    bytes: r.get(6)?,
+                    updated_at: r.get(7)?,
+                    project: r.get(8)?,
+                    worktree: r.get(9)?,
+                })
+            },
+        )
+        .map_err(db_err)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(db_err)?;
+    Ok(rows)
+}
+
+/// Seconds in a duration like `30d`, `12h`, `90m`, `45s` or `2w`.
+pub fn parse_duration(s: &str) -> Result<i64, Error> {
+    let bad = || {
+        Error::Usage(format!(
+            "bad duration {s:?}: use a number and s, m, h, d or w"
+        ))
+    };
+    let unit = s.chars().last().ok_or_else(bad)?;
+    let mult: i64 = match unit {
+        's' => 1,
+        'm' => 60,
+        'h' => 3600,
+        'd' => 86_400,
+        'w' => 604_800,
+        _ => return Err(bad()),
+    };
+    let digits = &s[..s.len() - 1];
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(bad());
+    }
+    digits
+        .parse::<i64>()
+        .ok()
+        .and_then(|n| n.checked_mul(mult))
+        .filter(|n| *n <= 100 * 365 * 86_400)
+        .ok_or_else(bad)
+}
+
+/// Delete Artifacts with all their Revisions (by cascade) and any blob no
+/// remaining Revision references. All or nothing: one unknown id deletes
+/// nothing and is NotFound.
+pub fn delete(conn: &mut Connection, ids: &[String]) -> Result<Vec<String>, Error> {
+    let mut unique: Vec<String> = Vec::new();
+    for id in ids {
+        if !unique.contains(id) {
+            unique.push(id.clone());
+        }
+    }
+    write_tx(conn, |tx| {
+        let mut missing = Vec::new();
+        for id in &unique {
+            let found = tx
+                .query_row("SELECT 1 FROM artifacts WHERE id = ?1", [id], |_| Ok(()))
+                .optional()
+                .map_err(db_err)?
+                .is_some();
+            if !found {
+                missing.push(id.as_str());
+            }
+        }
+        if !missing.is_empty() {
+            return Err(Error::NotFound(format!(
+                "no artifact {}",
+                missing.join(", ")
+            )));
+        }
+        for id in &unique {
+            tx.execute("DELETE FROM artifacts WHERE id = ?1", [id])
+                .map_err(db_err)?;
+        }
+        tx.execute(
+            "DELETE FROM blobs WHERE sha256 NOT IN (SELECT sha256 FROM revision_files)",
+            [],
+        )
+        .map_err(db_err)?;
+        Ok(unique)
+    })
+}
+
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -229,6 +385,18 @@ mod tests {
             serde_json::to_string(&r).unwrap(),
             r#"{"id":"abc123","revision":2,"ref":"abc123@2"}"#
         );
+    }
+
+    #[test]
+    fn durations() {
+        assert_eq!(parse_duration("45s").unwrap(), 45);
+        assert_eq!(parse_duration("90m").unwrap(), 5400);
+        assert_eq!(parse_duration("12h").unwrap(), 43_200);
+        assert_eq!(parse_duration("30d").unwrap(), 2_592_000);
+        assert_eq!(parse_duration("2w").unwrap(), 1_209_600);
+        for bad in ["", "d", "30", "-3d", "3x", "1.5h", "3 d", "99999999999999d"] {
+            assert_eq!(parse_duration(bad).unwrap_err().exit_code(), 2, "{bad}");
+        }
     }
 
     #[test]
