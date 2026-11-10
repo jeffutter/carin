@@ -160,7 +160,7 @@ async fn app_js(UrlPath(hash): UrlPath<String>) -> Response {
     asset(&hash, &JS_HASH, "text/javascript; charset=utf-8", APP_JS)
 }
 
-fn layout(s: &UiState, title: &str, body: Markup) -> Markup {
+fn layout(s: &UiState, title: &str, header_extra: Markup, body: Markup) -> Markup {
     html! {
         (DOCTYPE)
         html lang="en" {
@@ -179,6 +179,7 @@ fn layout(s: &UiState, title: &str, body: Markup) -> Markup {
                 header.top {
                     b { a href="/" { "cairn" } }
                     span.mut.small { "Reviewing as " (s.reviewer) }
+                    div.hdract { (header_extra) }
                 }
                 (body)
             }
@@ -426,7 +427,7 @@ async fn list_page(
                 (table(&view.rows))
             }
         };
-        html_response(layout(&s, "Artifacts", body))
+        html_response(layout(&s, "Artifacts", html! {}, body))
     };
     res.headers_mut().insert(
         header::VARY,
@@ -685,11 +686,6 @@ fn load_page(
         };
         let threads = html! {
             section.whole {
-                div.row {
-                    button type="button" hx-get={ (base) "/compose?whole=1" }
-                        hx-target="#slot-whole" hx-swap="innerHTML" { "Comment on this revision" }
-                }
-                div #slot-whole {}
                 @for t in &threads { (thread_card(t, &base, viewing)) }
             }
         };
@@ -739,7 +735,16 @@ async fn artifact_page(
         Ok(p) => p,
         Err(r) => return r.into_response(),
     };
-    html_response(layout(&s, &page.name, page_markup(&page)))
+    // Only the Kinds without a text body have a whole-Revision Comment; it
+    // opens the dialog that page_markup draws.
+    let header_extra = match page.body {
+        Body::Whole { .. } => html! {
+            button type="button" data-open="whole-dialog" { "Comment on this revision" }
+            a.small href="#live" { "Comments" }
+        },
+        Body::Markdown { .. } => html! {},
+    };
+    html_response(layout(&s, &page.name, header_extra, page_markup(&page)))
 }
 
 // --- live region and Thread actions ---------------------------------------------
@@ -841,17 +846,15 @@ where
 struct ComposeParams {
     line: Option<i64>,
     section: Option<String>,
-    /// A Thread on the whole Revision (any Kind; the only form for non-text Kinds).
-    whole: Option<String>,
 }
 
-/// The inline form that starts a Thread at a line, a Section or the whole Revision.
+/// The inline form that starts a Thread at a line, or a Section.
 async fn compose(UrlPath(idrev): UrlPath<String>, Query(q): Query<ComposeParams>) -> Response {
     let (id, rev) = match target(&idrev) {
         Ok(t) => t,
         Err(e) => return e.into_response(),
     };
-    let forms = [q.line.is_some(), q.section.is_some(), q.whole.is_some()];
+    let forms = [q.line.is_some(), q.section.is_some()];
     if forms.into_iter().filter(|b| *b).count() != 1 {
         return plain(StatusCode::BAD_REQUEST, "bad request");
     }
@@ -868,10 +871,6 @@ async fn compose(UrlPath(idrev): UrlPath<String>, Query(q): Query<ComposeParams>
             @if let Some(sec) = &q.section {
                 input type="hidden" name="section" value=(sec);
                 div.mut.small { "Comment on Section " (sec) }
-            }
-            @if q.whole.is_some() {
-                input type="hidden" name="whole" value="1";
-                div.mut.small { "Comment on the whole revision" }
             }
             textarea name="body" rows="3" required placeholder="Comment" autofocus {}
             div.row {
@@ -1004,8 +1003,10 @@ fn page_markup(p: &Page) -> Markup {
         None => p.kind.as_str().to_string(),
     };
     let here = format!("/a/{}", p.id);
+    let whole = matches!(p.body, Body::Whole { .. });
+    let base = format!("/a/{}@{}", p.id, p.viewing);
     html! {
-        div.wrap #page {
+        div.wrap.fullpage[whole] #page {
             div.titlebar {
                 h1 { (p.name) }
                 span.pill { (kind_label) }
@@ -1031,7 +1032,21 @@ fn page_markup(p: &Page) -> Markup {
             }
             // Outside #live: the poll replaces #live, and re-rendering an
             // iframe would reload the Bundle on every new Comment.
-            @if let Body::Whole { frame, .. } = &p.body { (frame) }
+            @if let Body::Whole { frame, .. } = &p.body {
+                (frame)
+                // Outside #live too: a poll swap would close it and drop a draft.
+                dialog #whole-dialog {
+                    form.compose hx-post={ (base) "/threads" } hx-target="#live" hx-swap="outerHTML" {
+                        input type="hidden" name="whole" value="1";
+                        div.mut.small { "Comment on the whole revision" }
+                        textarea name="body" rows="4" required placeholder="Comment" {}
+                        div.row {
+                            button type="submit" { "Comment" }
+                            button type="button" data-close { "Cancel" }
+                        }
+                    }
+                }
+            }
             (live_markup(p))
         }
     }
@@ -1351,6 +1366,59 @@ fn render_markdown(src: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn page_with(kind: Kind, body: Body) -> Page {
+        Page {
+            id: "abc".into(),
+            name: "n".into(),
+            kind,
+            format: None,
+            project: None,
+            worktree: None,
+            revisions: vec![RevInfo {
+                number: 1,
+                author: "x".into(),
+                created_at: "2026-01-01T00:00:00Z".into(),
+            }],
+            viewing: 1,
+            latest: 1,
+            marker: "m".into(),
+            body,
+        }
+    }
+
+    #[test]
+    fn whole_page_has_dialog_outside_live_and_no_inline_slot() {
+        let p = page_with(
+            Kind::Html,
+            Body::Whole {
+                frame: html! { iframe.frame {} },
+                threads: html! { section.whole {} },
+            },
+        );
+        let out = page_markup(&p).into_string();
+        assert!(out.contains("id=\"whole-dialog\""), "{out}");
+        assert!(out.contains("fullpage"), "{out}");
+        assert!(!out.contains("slot-whole"), "{out}");
+        assert!(!out.contains("Comment on this revision"), "{out}");
+        let live = out.find("id=\"live\"").unwrap();
+        assert!(out.find("whole-dialog").unwrap() < live, "{out}");
+        assert!(out.contains("hx-post=\"/a/abc@1/threads\""), "{out}");
+    }
+
+    #[test]
+    fn markdown_page_has_no_whole_dialog() {
+        let p = page_with(
+            Kind::Markdown,
+            Body::Markdown {
+                doc: html! {},
+                outline: vec![],
+            },
+        );
+        let out = page_markup(&p).into_string();
+        assert!(!out.contains("whole-dialog"), "{out}");
+        assert!(!out.contains("fullpage"), "{out}");
+    }
 
     #[test]
     fn line_of_mid_char_offset_does_not_panic() {

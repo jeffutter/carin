@@ -39,6 +39,28 @@
     if (f) f.remove();
   });
 
+  document.addEventListener("click", function (e) {
+    var t = e.target.closest && e.target.closest("[data-open],[data-close]");
+    if (!t) return;
+    if (t.hasAttribute("data-open")) {
+      var d = document.getElementById(t.getAttribute("data-open"));
+      if (d && d.showModal) d.showModal();
+    } else {
+      var dlg = t.closest("dialog");
+      if (dlg) dlg.close();
+    }
+  });
+
+  // A successful comment from the dialog closes it and clears the draft.
+  document.addEventListener("htmx:afterRequest", function (e) {
+    var el = e.detail && e.detail.elt;
+    var dlg = el && el.closest && el.closest("dialog");
+    if (dlg && e.detail.successful) {
+      if (el.reset) el.reset();
+      dlg.close();
+    }
+  });
+
   document.addEventListener("htmx:responseError", function (e) {
     // A failed background poll retries on the next tick; do not interrupt.
     if (isPoll(e)) return;

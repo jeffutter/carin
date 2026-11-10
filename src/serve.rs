@@ -1336,9 +1336,15 @@ mod tests {
     async fn whole_revision_threads_on_an_image() {
         let f = Fixture::new();
         let id = f.submit("pic", Kind::Image, None, files(&[("p.png", PNG)]));
-        let (st, _, form) = get(&f.ui, UI_HOST, &format!("/a/{id}@1/compose?whole=1")).await;
+        let (st, _, page) = get(&f.ui, UI_HOST, &format!("/a/{id}@1")).await;
         assert_eq!(st, StatusCode::OK);
-        assert!(text(&form).contains("name=\"whole\" value=\"1\""));
+        let page = text(&page);
+        assert!(page.contains("id=\"whole-dialog\""), "{page}");
+        assert!(page.contains("data-open=\"whole-dialog\""), "{page}");
+        assert!(page.contains("name=\"whole\" value=\"1\""), "{page}");
+        assert!(!page.contains("slot-whole"), "{page}");
+        let (st, _, _) = get(&f.ui, UI_HOST, &format!("/a/{id}@1/compose?whole=1")).await;
+        assert_eq!(st, StatusCode::BAD_REQUEST);
         let new = format!("/a/{id}@1/threads");
         let (st, frag) = post(&f.ui, UI_HOST, &new, "body=nice&whole=1", true).await;
         assert_eq!(st, StatusCode::OK, "{frag}");
