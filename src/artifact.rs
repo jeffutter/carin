@@ -10,6 +10,7 @@ use crate::bundle::{self, FileInput, Input, RawFile};
 use crate::cli::Context;
 use crate::comments;
 use crate::db::{db_err, write_tx};
+use crate::diagram::Format;
 use crate::error::Error;
 use crate::ids::new_artifact_id;
 use crate::kind::Kind;
@@ -19,6 +20,8 @@ use crate::sections;
 pub struct SubmitInput {
     pub name: String,
     pub kind: Kind,
+    /// Diagram format; required for a diagram, rejected otherwise.
+    pub format: Option<Format>,
     pub input: Input,
     pub scope: Option<Scope>,
 }
@@ -66,22 +69,23 @@ pub fn parse_target(s: &str) -> Result<(String, Option<i64>), Error> {
 }
 
 pub fn submit(conn: &mut Connection, ctx: &Context, input: SubmitInput) -> Result<Ref, Error> {
-    let files = bundle::prepare(input.kind, input.input, &input.name)?;
+    let files = bundle::prepare(input.kind, input.format, input.input, &input.name)?;
     write_tx(conn, |tx| {
         let mut id = None;
         for _ in 0..5 {
             let candidate = new_artifact_id()?;
             let n = tx
                 .execute(
-                    "INSERT OR IGNORE INTO artifacts (id, kind, name, project_name, project_root, worktree, created_at, updated_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+                    "INSERT OR IGNORE INTO artifacts (id, kind, format, name, project_name, project_root, worktree, created_at, updated_at)
+                     VALUES (?1, ?2, ?7, ?3, ?4, ?5, ?6, strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
                     params![
                         candidate,
                         input.kind.as_str(),
                         input.name,
                         input.scope.as_ref().map(|s| &s.name),
                         input.scope.as_ref().map(|s| &s.root),
-                        input.scope.as_ref().and_then(|s| s.worktree.as_ref())
+                        input.scope.as_ref().and_then(|s| s.worktree.as_ref()),
+                        input.format.map(Format::as_str)
                     ],
                 )
                 .map_err(db_err)?;
@@ -155,7 +159,17 @@ pub fn edit(
                 input.files[0].path = single_path.clone();
             }
         }
-        bundle::prepare(kind, input, &single_path)
+        // The stored format is fixed at creation, so an edit is re-checked
+        // against it. A Mermaid render here runs inside the write
+        // transaction and can hold the database lock up to the render time
+        // limit; that is accepted so the format and the latest Revision are
+        // read under the same lock as the insert.
+        let format = if kind == Kind::Diagram {
+            Some(diagram_format(latest.tx, latest.id)?)
+        } else {
+            None
+        };
+        bundle::prepare(kind, format, input, &single_path)
     })
 }
 
@@ -185,6 +199,7 @@ pub fn section_edit(
         let spliced = sections::splice(text, query, replacement)?.into_bytes();
         bundle::prepare(
             Kind::Markdown,
+            None,
             Input {
                 files: vec![RawFile {
                     path: path.clone(),
@@ -205,6 +220,24 @@ fn utf8_markdown<'a>(kind: &str, bytes: &'a [u8]) -> Result<&'a str, Error> {
     }
     std::str::from_utf8(bytes)
         .map_err(|_| Error::Rejected("markdown Artifact is not valid UTF-8".into()))
+}
+
+/// A diagram Artifact's stored format; rejects any other Kind.
+pub fn diagram_format(conn: &Connection, id: &str) -> Result<Format, Error> {
+    let (kind, format): (String, Option<String>) = conn
+        .query_row(
+            "SELECT kind, format FROM artifacts WHERE id = ?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(db_err)?
+        .ok_or_else(|| Error::NotFound(format!("no artifact {id}")))?;
+    match (kind.as_str(), format) {
+        ("diagram", Some(f)) => Format::parse(&f),
+        ("diagram", None) => Err(Error::Unexpected(format!("diagram {id} has no format"))),
+        _ => Err(Error::Rejected(format!("{id} is a {kind}, not a diagram"))),
+    }
 }
 
 /// Text of a markdown Artifact's Revision (latest by default); rejects other

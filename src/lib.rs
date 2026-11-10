@@ -4,6 +4,7 @@ pub mod cli;
 pub mod comments;
 pub mod config;
 pub mod db;
+pub mod diagram;
 pub mod error;
 pub mod ids;
 pub mod kind;
@@ -92,14 +93,21 @@ pub fn run(command: Command, ctx: &Context) -> Result<u8, Error> {
                     "submitting from stdin requires --kind and --name".into(),
                 ));
             }
-            if format.is_some() {
-                return Err(Error::Rejected("--format is not supported yet".into()));
-            }
             let is_dir = !stdin && std::path::Path::new(&path).is_dir();
             // A directory can only be an html Bundle.
-            let kind = match (kind, is_dir) {
-                (None, true) => kind::Kind::Html,
+            let kind = match (kind, format, is_dir) {
+                (None, _, true) => kind::Kind::Html,
+                // --format only makes sense for a diagram.
+                (None, Some(_), false) => kind::Kind::Diagram,
                 _ => kind::infer(&path, kind)?,
+            };
+            let format = match (kind, format) {
+                (kind::Kind::Diagram, None) => {
+                    Some(diagram::Format::infer(&path).ok_or_else(|| {
+                        Error::Rejected("a diagram needs --format mermaid or --format svg".into())
+                    })?)
+                }
+                (_, f) => f,
             };
             let name = match name {
                 Some(n) => n,
@@ -130,6 +138,7 @@ pub fn run(command: Command, ctx: &Context) -> Result<u8, Error> {
                 artifact::SubmitInput {
                     name,
                     kind,
+                    format,
                     input,
                     scope,
                 },

@@ -59,8 +59,11 @@ impl Kind {
                 "woff" => Some("font/woff"),
                 _ => image_type(&ext),
             },
+            // A diagram's media type comes from its Format, not its extension.
             Kind::Diagram => {
-                return Err(Error::Rejected("kind diagram is not supported yet".into()));
+                return Err(Error::Unexpected(
+                    "diagram media type is decided by its format".into(),
+                ));
             }
         };
         found.ok_or_else(|| {
@@ -137,7 +140,6 @@ mod tests {
             (Kind::Image, "a.html"),
             (Kind::Html, "x.exe"),
             (Kind::Html, "noext"),
-            (Kind::Diagram, "a.mmd"),
         ] {
             assert_eq!(k.media_type(p).unwrap_err().exit_code(), 4, "{p}");
         }

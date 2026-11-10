@@ -2436,3 +2436,148 @@ mod bundles {
         assert_eq!(code(&db, &["edit", &mid, s(&dir)]), Some(4));
     }
 }
+
+mod diagrams {
+    use super::cairn;
+    use std::path::Path;
+
+    const FLOW: &str = "flowchart LR\n A[Start] --> B{Ok?}\n B -->|yes| C[Done]\n";
+    const SVG: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\"><script>x</script></svg>";
+
+    fn run(db: &Path, args: &[&str]) -> std::process::Output {
+        let mut c = cairn();
+        for v in [
+            "CAIRN_ROLE",
+            "CAIRN_AGENT",
+            "CAIRN_SESSION",
+            "CLAUDE_CODE_SESSION_ID",
+            "CAIRN_DB",
+            "CAIRN_PROJECT",
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_INDEX_FILE",
+        ] {
+            c.env_remove(v);
+        }
+        c.current_dir(std::env::temp_dir());
+        c.arg("--db").arg(db).args(args);
+        c.output().unwrap()
+    }
+
+    fn id_of(o: &std::process::Output) -> String {
+        assert_eq!(
+            o.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+        v["id"].as_str().unwrap().to_string()
+    }
+
+    fn file(dir: &Path, name: &str, text: &str) -> String {
+        let p = dir.join(name);
+        std::fs::write(&p, text).unwrap();
+        p.to_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn mermaid_submit_get_prints_source_and_list_shows_diagram() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("c.db");
+        let f = file(dir.path(), "flow.mmd", FLOW);
+        let id = id_of(&run(&db, &["submit", &f]));
+        let g = run(&db, &["get", &id]);
+        assert_eq!(g.status.code(), Some(0));
+        assert_eq!(g.stdout, FLOW.as_bytes());
+        let l = run(&db, &["list"]);
+        let v: serde_json::Value = serde_json::from_slice(&l.stdout).unwrap();
+        assert_eq!(v["artifacts"][0]["kind"], "diagram");
+    }
+
+    #[test]
+    fn invalid_mermaid_exits_four_with_pele_code_and_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("c.db");
+        let f = file(dir.path(), "bad.mmd", "flowchart LR\n A -->\n");
+        let o = run(&db, &["submit", &f]);
+        assert_eq!(o.status.code(), Some(4));
+        let v: serde_json::Value = serde_json::from_slice(&o.stderr).unwrap();
+        assert_eq!(v["code"], "rejected_input");
+        assert!(v["message"].as_str().unwrap().starts_with("mermaid: "));
+        let l = run(&db, &["list"]);
+        let v: serde_json::Value = serde_json::from_slice(&l.stdout).unwrap();
+        assert!(v["artifacts"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn invalid_mermaid_edit_exits_four_and_adds_no_revision() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("c.db");
+        let id = id_of(&run(&db, &["submit", &file(dir.path(), "a.mmd", FLOW)]));
+        let bad = file(dir.path(), "bad.mmd", "flowchart LR\n A -->\n");
+        assert_eq!(run(&db, &["edit", &id, &bad]).status.code(), Some(4));
+        assert_eq!(
+            run(&db, &["get", &format!("{id}@2")]).status.code(),
+            Some(3)
+        );
+        let good = file(dir.path(), "b.mmd", "flowchart TD\n X --> Y\n");
+        assert_eq!(run(&db, &["edit", &id, &good]).status.code(), Some(0));
+    }
+
+    #[test]
+    fn svg_roundtrips_unsanitised_and_malformed_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("c.db");
+        let f = file(dir.path(), "d.svg", SVG);
+        let id = id_of(&run(&db, &["submit", &f, "--format", "svg"]));
+        assert_eq!(run(&db, &["get", &id]).stdout, SVG.as_bytes());
+        let bad = file(dir.path(), "bad.svg", "<svg><g></svg>");
+        assert_eq!(
+            run(&db, &["submit", &bad, "--format", "svg"]).status.code(),
+            Some(4)
+        );
+        assert_eq!(run(&db, &["edit", &id, &bad]).status.code(), Some(4));
+    }
+
+    #[test]
+    fn svg_without_format_and_format_on_other_kinds_are_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("c.db");
+        let f = file(dir.path(), "d.svg", SVG);
+        assert_eq!(run(&db, &["submit", &f]).status.code(), Some(4));
+        assert_eq!(
+            run(&db, &["submit", &f, "--kind", "diagram"]).status.code(),
+            Some(4)
+        );
+        let md = file(dir.path(), "a.md", "# x\n");
+        assert_eq!(
+            run(&db, &["submit", &md, "--format", "svg"]).status.code(),
+            Some(4)
+        );
+        assert_eq!(
+            run(
+                &db,
+                &["submit", &md, "--kind", "markdown", "--format", "svg"]
+            )
+            .status
+            .code(),
+            Some(4)
+        );
+    }
+
+    #[test]
+    fn diagrams_have_no_sections_or_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("c.db");
+        let id = id_of(&run(&db, &["submit", &file(dir.path(), "a.mmd", FLOW)]));
+        assert_eq!(run(&db, &["outline", &id]).status.code(), Some(4));
+        let out = dir.path().join("o");
+        assert_eq!(
+            run(&db, &["get", &id, "--out", out.to_str().unwrap()])
+                .status
+                .code(),
+            Some(2)
+        );
+    }
+}

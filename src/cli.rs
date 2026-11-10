@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::config::resolve_db_path_from_env;
+use crate::diagram::Format;
 use crate::error::Error;
 use crate::kind::Kind;
 
@@ -68,9 +69,9 @@ pub enum Command {
         /// Artifact name (default: the file name; required for stdin)
         #[arg(long)]
         name: Option<String>,
-        /// Diagram format
-        #[arg(long)]
-        format: Option<String>,
+        /// Diagram format (`.mmd` implies mermaid; required for svg and stdin)
+        #[arg(long, value_enum)]
+        format: Option<Format>,
     },
     /// Replace an Artifact's content with a new Revision and print its ref
     Edit {

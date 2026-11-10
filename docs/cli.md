@@ -55,7 +55,7 @@ One Rust table (an enum with descriptions) drives the CLI error handling and the
 
 ### submit
 
-`submit <path|dir|->` creates an Artifact and its Revision 1. A directory is an html Bundle and needs `index.html` at its root; a single `.html` file is stored as `index.html`. Symlinks are rejected. `edit` accepts a directory for an html Artifact and resubmits the whole Bundle; unchanged files share blobs. Stdin (`-`) needs `--kind` and `--name`. Otherwise `--kind` is inferred from the extension ([data-model.md](data-model.md#kinds-and-files)); `--format` for diagrams. Local images are not uploaded or rewritten: submit an image as its own Artifact and embed it as `cairn:<id>`. There is no inline-string flag. Prints the new `abc123@1`.
+`submit <path|dir|->` creates an Artifact and its Revision 1. A directory is an html Bundle and needs `index.html` at its root; a single `.html` file is stored as `index.html`. Symlinks are rejected. `edit` accepts a directory for an html Artifact and resubmits the whole Bundle; unchanged files share blobs. Stdin (`-`) needs `--kind` and `--name`. Otherwise `--kind` is inferred from the extension ([data-model.md](data-model.md#kinds-and-files)); A diagram needs `--format mermaid|svg`: `.mmd` implies mermaid, `.svg` and stdin need it explicitly (`--format` alone implies `--kind diagram`), and it is rejected for other Kinds. Invalid Mermaid exits 4 with Pele's code and message (`mermaid: syntax: ...`); malformed SVG exits 4. `edit` re-validates against the format stored at creation. Local images are not uploaded or rewritten: submit an image as its own Artifact and embed it as `cairn:<id>`. There is no inline-string flag. Prints the new `abc123@1`.
 
 ### edit
 

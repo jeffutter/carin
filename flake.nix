@@ -35,8 +35,16 @@
           RUSTFLAGS = "-Clinker=clang -Clink-arg=--ld-path=${pkgs.mold}/bin/mold";
         };
 
+        # Pele, the Mermaid renderer, embedded with include_str! (src/diagram.rs).
+        pele = pkgs.fetchzip {
+          url = "https://registry.npmjs.org/pele/-/pele-1.13.0.tgz";
+          hash = "sha256-1mxtui9HY6TO5Sdpt+DtoTf/O7q8rvcba76Ifg1txBs=";
+        };
+        peleJs = "${pele}/dist/pele.global.js";
+
         commonArgs = {
           inherit src;
+          PELE_JS = peleJs;
           strictDeps = true;
           nativeBuildInputs = [ pkgs.clang ];
           buildInputs = lib.optionals pkgs.stdenv.hostPlatform.isDarwin [ pkgs.libiconv ];
@@ -61,6 +69,8 @@
           fmt = craneLib.cargoFmt { inherit src; };
           nextest = craneLib.cargoNextest (commonArgs // {
             inherit cargoArtifacts;
+            # The scoping tests shell out to git.
+            nativeCheckInputs = [ pkgs.git ];
           });
         };
 
@@ -72,6 +82,7 @@
             pkgs.clang
             pkgs.sqlite
           ] ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.mold ];
+          PELE_JS = peleJs;
         } // envVars);
 
         formatter = pkgs.nixpkgs-fmt;

@@ -4,6 +4,7 @@
 use std::fs;
 use std::path::Path;
 
+use crate::diagram::{self, Format};
 use crate::error::Error;
 use crate::kind::Kind;
 use crate::limits;
@@ -76,28 +77,49 @@ pub fn read_dir(root: &Path) -> Result<Input, Error> {
 
 /// Check a submitted file set against the Kind and turn it into storable
 /// files. `single_path` is where a lone markdown file is stored (the artifact
-/// name on submit, the previous path on edit).
-pub fn prepare(kind: Kind, input: Input, single_path: &str) -> Result<Vec<FileInput>, Error> {
+/// name on submit, the previous path on edit). `format` is required for a
+/// diagram and rejected for every other Kind. A diagram is checked here
+/// (Mermaid is rendered, SVG parsed), so a bad one never reaches storage.
+pub fn prepare(
+    kind: Kind,
+    format: Option<Format>,
+    input: Input,
+    single_path: &str,
+) -> Result<Vec<FileInput>, Error> {
     let Input { mut files, dir } = input;
     limits::check_bundle_files(files.len())?;
+    match (kind, format) {
+        (Kind::Diagram, None) => {
+            return Err(Error::Rejected(
+                "a diagram needs --format mermaid or --format svg".into(),
+            ));
+        }
+        (Kind::Diagram, Some(_)) => {}
+        (_, Some(_)) => {
+            return Err(Error::Rejected(format!(
+                "--format is for diagrams, not {}",
+                kind.as_str()
+            )));
+        }
+        (_, None) => {}
+    }
     match kind {
         Kind::Html => {
             if !dir && files.len() == 1 {
                 files[0].path = "index.html".into();
             }
         }
-        Kind::Markdown | Kind::Image => {
+        Kind::Markdown | Kind::Image | Kind::Diagram => {
             if dir || files.len() != 1 {
                 return Err(Error::Rejected(format!(
                     "a {} Artifact is a single file, not a directory",
                     kind.as_str()
                 )));
             }
-            if kind == Kind::Markdown {
+            if kind != Kind::Image {
                 files[0].path = single_path.into();
             }
         }
-        Kind::Diagram => return Err(Error::Rejected("kind diagram is not supported yet".into())),
     }
     let mut total: u64 = 0;
     let mut out: Vec<FileInput> = Vec::with_capacity(files.len());
@@ -111,8 +133,15 @@ pub fn prepare(kind: Kind, input: Input, single_path: &str) -> Result<Vec<FileIn
         limits::check_file(f.bytes.len() as u64)?;
         total += f.bytes.len() as u64;
         limits::check_revision(total)?;
+        let media_type = match format {
+            Some(fmt) => {
+                diagram::validate(fmt, &f.bytes)?;
+                fmt.media_type()
+            }
+            None => kind.media_type(&f.path)?,
+        };
         out.push(FileInput {
-            media_type: kind.media_type(&f.path)?,
+            media_type,
             path: f.path,
             bytes: f.bytes,
         });
@@ -150,6 +179,7 @@ mod tests {
     fn single_html_becomes_index() {
         let files = prepare(
             Kind::Html,
+            None,
             Input {
                 files: vec![raw("page.html", "<p>")],
                 dir: false,
@@ -165,6 +195,7 @@ mod tests {
     fn directory_without_entry_page_is_rejected() {
         let e = prepare(
             Kind::Html,
+            None,
             Input {
                 files: vec![raw("page.html", "<p>")],
                 dir: true,
@@ -181,6 +212,7 @@ mod tests {
     fn markdown_directory_is_rejected() {
         let e = prepare(
             Kind::Markdown,
+            None,
             Input {
                 files: vec![raw("a.md", "x")],
                 dir: true,

@@ -42,7 +42,7 @@ Optionally a per-Artifact "last seen" marker for the web UI ([web-ui.md](web-ui.
 
 ### Limits
 
-Hard-coded constants, not configuration: 10 MiB per file, 25 MiB per Revision, 200 files per Bundle. An over-limit submit is rejected, naming the limit. There is no total cap, no retention and no expiry.
+Hard-coded constants, not configuration: 10 MiB per file, 25 MiB per Revision, 200 files per Bundle. An over-limit submit is rejected, naming the limit. There is no total cap, no retention and no expiry. The embedded Mermaid engine runs under fixed limits too: 64 MiB heap, 1 MiB stack and 5 s per render; hitting one is a rejection (exit 4), and the engine is rebuilt for the next render.
 
 ## Markdown embeds
 
