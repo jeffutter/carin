@@ -105,6 +105,7 @@ pub enum Command {
     },
     /// Print an Artifact's content: `abc123` or `abc123@2`
     Get {
+        /// `abc123` or `abc123@2`; defaults to the latest Revision
         target: String,
         /// Print only this markdown Section ("A > B", children included)
         #[arg(long)]
@@ -115,13 +116,17 @@ pub enum Command {
     },
     /// Print the web UI URL of an Artifact (`abc123` or `abc123@2`) without checking a server
     View {
+        /// `abc123` or `abc123@2`
         target: String,
         /// UI base URL (default: http://127.0.0.1:<CAIRN_PORT or 7878>)
         #[arg(long, env = "CAIRN_URL")]
         url: Option<String>,
     },
     /// List a markdown Artifact's headings with their paths and sizes
-    Outline { target: String },
+    Outline {
+        /// `abc123` or `abc123@2`; defaults to the latest Revision
+        target: String,
+    },
     /// List Artifacts, newest activity first
     List {
         /// Only this Kind
@@ -156,6 +161,12 @@ pub enum Command {
     Comment {
         #[command(subcommand)]
         action: CommentAction,
+    },
+    /// Print SKILL.md for agents to stdout (--check <PATH>: exit 1 if an installed copy is stale)
+    Skill {
+        /// Compare this installed copy with the current output; exit 0 if current, 1 if stale
+        #[arg(long, value_name = "PATH")]
+        check: Option<String>,
     },
     /// Delete Artifacts with all their Revisions
     Delete {
@@ -203,9 +214,15 @@ pub enum CommentAction {
         reply: Option<i64>,
     },
     /// Resolve a Thread
-    Resolve { thread_id: i64 },
+    Resolve {
+        /// Root Comment id of the Thread
+        thread_id: i64,
+    },
     /// Reopen a resolved Thread
-    Reopen { thread_id: i64 },
+    Reopen {
+        /// Root Comment id of the Thread
+        thread_id: i64,
+    },
     /// List Threads (open ones by default, on any Revision, stale included)
     List {
         /// Only this Artifact (no `@revision`); ignores the Session scope

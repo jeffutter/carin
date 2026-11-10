@@ -21,6 +21,8 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "signal
 utoipa = "6.0.0"
 
 [dev-dependencies]
+insta = "1"
+shlex = "1"
 http-body-util = "0.1"
 tempfile = "3.27.0"
 tower = { version = "0.5", features = ["util"] }

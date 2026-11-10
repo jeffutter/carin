@@ -1,0 +1,268 @@
+---
+source: src/skill.rs
+expression: generate()
+---
+---
+name: cairn
+description: Submit documents, diagrams, images and html pages to cairn for human review, and read and answer the reviewer's Comments. Use when you want a human to review or comment on something you produced.
+cairn_version: 0.1.0
+hash: b6a2910bfb665784ce86b5f21b75173d3c50e153480bd514220c38553a372f1b
+---
+
+# cairn
+
+cairn stores Artifacts (documents, images, diagrams, html Bundles) so a human can review them in a web UI and comment on them. You submit an Artifact, the human reads it and leaves Comments in Threads, and you read those Comments and answer them by editing the Artifact. Every edit creates a new Revision; nothing is overwritten.
+
+All commands print JSON on stdout (except `get`, which prints raw content). Errors print a JSON object with a stable `code` and a `message` on stderr and set the exit code listed under "Exit codes". Run `cairn <command> --help` for the details of any command; the reference below lists every flag.
+
+## Workflow
+
+1. Submit the document and note the ref it prints (`abc123@1`):
+
+```sh
+cairn submit plan.md
+```
+
+2. Tell the human the Artifact id, then wait for their Comments. `--wait` blocks until a Comment newer than the highest one now exists, and exits 5 if nothing arrives in time; on exit 5 just wait again:
+
+```sh
+cairn comment list abc123 --wait
+```
+
+3. Change the Artifact in response. Pass the Revision you last read as `--base` so you never overwrite a newer edit (exit 6 means it moved; read it again first). Pass the root Comment ids you addressed as `--addresses`; each named Thread gets an "addressed in abc123@2" reply and stays open for the human to resolve:
+
+```sh
+cairn edit abc123 plan.md --base 1 --addresses 12,14
+```
+
+4. Remember the highest Comment id you have seen and use `--since` so each round returns only new Threads:
+
+```sh
+cairn comment list abc123 --since 14 --wait
+```
+
+For a large markdown document, edit one Section instead of resending the whole file (see "Section paths"). You can also comment yourself with `cairn comment add` and reply in a Thread with `--reply`.
+
+## Choosing a Kind
+
+The Kind is inferred from the file extension. Pass `--kind` (and `--name`) when submitting from stdin.
+
+- `markdown`: prose, plans, specs, reports. The default choice, and the only Kind with Sections.
+- `image`: a picture file. Submit it on its own and embed it in markdown.
+- `diagram`: Mermaid (`.mmd`) or SVG source. SVG needs `--format svg`. Invalid Mermaid is rejected with exit 4.
+- `html`: a single `.html` file or a directory with an `index.html`, for an interactive page or a rendered report.
+
+```sh
+cairn submit diagram.mmd
+cairn submit shot.png
+cairn submit - --kind markdown --name notes
+```
+
+## Embeds
+
+A markdown Artifact can show an image or diagram Artifact with a `cairn:` reference in normal image syntax: `![alt](cairn:abc123)` for the latest Revision, or `![alt](cairn:abc123@2)` to pin one. Submit the image or diagram first, then reference its id. Local file paths are not uploaded. An embed naming a missing Artifact or Revision, or a markdown or html Artifact, is rejected with exit 4.
+
+## Section paths
+
+A Section is a markdown heading and everything under it, children included. Its path joins the heading texts with ` > `, for example `Design > Storage`. A path may be a suffix of the full path if that is unique. When it is not, add `#n` to pick the nth match (`Notes#2`). Inside a heading, `\`, `>` and a `#` before trailing digits are backslash-escaped (`Issue \#12`, `A \> B`). List the exact paths with:
+
+```sh
+cairn outline abc123
+```
+
+Use a path to read, edit or comment on one Section:
+
+```sh
+cairn get abc123 --section "Design > Storage"
+cairn edit abc123 storage.md --section "Design > Storage"
+cairn comment add abc123 "Why SQLite?" --section "Design > Storage"
+```
+
+A replacement file must start with a heading of the same level and must not contain a shallower heading. An ambiguous or missing path exits 4.
+
+## The human side
+
+cairn does not start its own web UI. The human runs `cairn serve` in a terminal; ask them to if they cannot open the Artifact. Never run `cairn serve` yourself, it does not return. Print the link to an Artifact for the human with:
+
+```sh
+cairn view abc123
+```
+
+Without a running server the link does not load, so say which command to run.
+
+## Reference
+
+### Global flags
+
+Accepted by every command.
+
+- `--role <ROLE>`: Attribution role for this invocation [env: CAIRN_ROLE] [default: agent] [values: agent, reviewer]
+- `--author <AUTHOR>`: Author name (default: the role name) [env: CAIRN_AGENT]
+- `--session <SESSION>`: Session label (falls back to CLAUDE_CODE_SESSION_ID) [env: CAIRN_SESSION]
+- `--db <DB>`: Database path [env: CAIRN_DB]
+- `--project <PROJECT>`: Project root path or name (default: detected from the cwd) [env: CAIRN_PROJECT]
+
+### Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| 0 | Success |
+| 1 | Unexpected error, including database busy past the 5 s timeout |
+| 2 | Usage error, including `delete` without `--yes` |
+| 3 | Not found, including a write to a deleted Artifact |
+| 4 | Rejected input: limits, bad Kind, missing embed target, invalid Mermaid, ambiguous or missing Section |
+| 5 | `comment list --wait` timed out with nothing new |
+| 6 | Conflict: `edit --base` named a stale Revision |
+
+`cairn skill --check` also exits 1 when the installed skill is stale. Errors print `{"code": ..., "message": ...}` as JSON on stderr.
+
+### Commands
+
+#### `cairn submit`
+
+Store a new Artifact and print its ref
+
+```
+cairn submit [OPTIONS] <PATH>
+```
+
+- `<PATH>`: File, directory (an html Bundle) or `-` for stdin
+- `--kind <KIND>`: Artifact Kind (inferred from the extension; required for stdin) [values: markdown, html, image, diagram]
+- `--name <NAME>`: Artifact name (default: the file name; required for stdin)
+- `--format <FORMAT>`: Diagram format (`.mmd` implies mermaid; required for svg and stdin) [values: mermaid, svg]
+
+#### `cairn edit`
+
+Replace an Artifact's content with a new Revision and print its ref
+
+```
+cairn edit [OPTIONS] <ID> <PATH>
+```
+
+- `<ID>`: Artifact id (no `@revision`)
+- `<PATH>`: File, directory (html Bundle) or `-` for stdin
+- `--base <BASE>`: Refuse unless this is still the latest Revision (exit 6)
+- `--section <SECTION>`: Replace only this markdown Section ("A > B"); the file must start with its heading
+- `--addresses <COMMENT_IDS>`: Reply "addressed in <ref>" in these Threads (root comment ids, comma-separated); they stay open
+
+#### `cairn get`
+
+Print an Artifact's content: `abc123` or `abc123@2`
+
+```
+cairn get [OPTIONS] <TARGET>
+```
+
+- `<TARGET>`: `abc123` or `abc123@2`; defaults to the latest Revision
+- `--section <SECTION>`: Print only this markdown Section ("A > B", children included)
+- `--out <OUT>`: Directory to write an image or html Artifact's files into
+
+#### `cairn view`
+
+Print the web UI URL of an Artifact (`abc123` or `abc123@2`) without checking a server
+
+```
+cairn view [OPTIONS] <TARGET>
+```
+
+- `<TARGET>`: `abc123` or `abc123@2`
+- `--url <URL>`: UI base URL (default: http://127.0.0.1:<CAIRN_PORT or 7878>) [env: CAIRN_URL]
+
+#### `cairn outline`
+
+List a markdown Artifact's headings with their paths and sizes
+
+```
+cairn outline <TARGET>
+```
+
+- `<TARGET>`: `abc123` or `abc123@2`; defaults to the latest Revision
+
+#### `cairn list`
+
+List Artifacts, newest activity first
+
+```
+cairn list [OPTIONS]
+```
+
+- `--kind <KIND>`: Only this Kind [values: markdown, html, image, diagram]
+- `--mine`: Only Artifacts created by the caller (its Session if it has one, else its author)
+- `--open`: Only Artifacts with open Threads
+- `--older-than <DURATION>`: Only Artifacts last updated longer ago than this: 30d, 12h, 90m, 45s, 2w
+- `--limit <LIMIT>`: Maximum rows [default: 50]
+- `--text`: Print a table instead of JSON
+- `--all-projects`: Show Artifacts of every Project
+- `--all-worktrees`: Also show Artifacts of every linked worktree of the Project
+- `--project-root <PATH>`: Only the Project with this root path (narrows a name shared by several)
+
+#### `cairn comment`
+
+Comments and Threads
+
+```
+cairn comment <COMMAND>
+```
+
+#### `cairn comment add`
+
+Add a Comment (a new Thread, or a reply with --reply)
+
+```
+cairn comment add [OPTIONS] <TARGET> <BODY>
+```
+
+- `<TARGET>`: `abc123` or `abc123@2`; defaults to the latest Revision
+- `<BODY>`: Comment text, or `-` for stdin
+- `--lines <LINES>`: Anchor to a line range of a text Artifact (`a-b` or `a`); the quote is stored
+- `--section <SECTION>`: Anchor to a markdown Section ("A > B"), resolved against the Comment's own Revision
+- `--reply <COMMENT_ID>`: Reply in the Thread of this root Comment id
+
+#### `cairn comment resolve`
+
+Resolve a Thread
+
+```
+cairn comment resolve <THREAD_ID>
+```
+
+- `<THREAD_ID>`: Root Comment id of the Thread
+
+#### `cairn comment reopen`
+
+Reopen a resolved Thread
+
+```
+cairn comment reopen <THREAD_ID>
+```
+
+- `<THREAD_ID>`: Root Comment id of the Thread
+
+#### `cairn comment list`
+
+List Threads (open ones by default, on any Revision, stale included)
+
+```
+cairn comment list [OPTIONS] [TARGET]
+```
+
+- `[TARGET]`: Only this Artifact (no `@revision`); ignores the Session scope
+- `--all`: Include resolved Threads
+- `--since <COMMENT_ID>`: Only Threads holding a Comment newer than this id, with all their replies; the open/--all rule still applies
+- `--wait`: Block until something newer than --since (default: the highest Comment id now) exists; exit 5 on timeout
+- `--timeout <SECS>`: Seconds to wait before giving up [default: 60]
+- `--text`: Print a table instead of JSON
+- `--all-projects`: Show Artifacts of every Project
+- `--all-worktrees`: Also show Artifacts of every linked worktree of the Project
+- `--project-root <PATH>`: Only the Project with this root path (narrows a name shared by several)
+
+#### `cairn delete`
+
+Delete Artifacts with all their Revisions
+
+```
+cairn delete [OPTIONS] <IDS>...
+```
+
+- `<IDS>...`: Artifact ids
+- `--yes`: Confirm the deletion (there is no prompt)

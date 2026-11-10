@@ -14,6 +14,7 @@ pub mod limits;
 pub mod scope;
 pub mod sections;
 pub mod serve;
+pub mod skill;
 pub mod ui;
 
 use std::io::{Read, Write};
@@ -116,6 +117,9 @@ pub fn run(command: Command, ctx: &Context) -> Result<u8, Error> {
     {
         let (ui, content) = serve::resolve_ports(port, content_port)?;
         return serve::serve(&ctx.db_path, ui, content, &reviewer_name);
+    }
+    if let Command::Skill { check } = command {
+        return skill::run(check.as_deref());
     }
     if let Command::View { target, url } = command {
         println!("{}", view_url(&target, url.as_deref())?);
@@ -289,7 +293,10 @@ pub fn run(command: Command, ctx: &Context) -> Result<u8, Error> {
             println!("{}", serde_json::json!({ "deleted": deleted }));
             Ok(0)
         }
-        Command::Comment { .. } | Command::Serve { .. } | Command::View { .. } => {
+        Command::Comment { .. }
+        | Command::Serve { .. }
+        | Command::Skill { .. }
+        | Command::View { .. } => {
             unreachable!("handled above")
         }
         Command::Outline { target } => {
