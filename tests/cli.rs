@@ -414,6 +414,53 @@ mod roundtrip {
         assert_eq!(o.status.code(), Some(4));
         assert!(String::from_utf8_lossy(&o.stderr).contains("10 MiB"));
     }
+
+    #[test]
+    fn submit_stdin_without_name_is_usage_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let o = base(&dir.path().join("c.db"))
+            .args(["submit", "-", "--kind", "markdown"])
+            .output()
+            .unwrap();
+        assert_eq!(o.status.code(), Some(2));
+        assert!(String::from_utf8_lossy(&o.stderr).contains("--name"));
+    }
+
+    #[test]
+    fn submit_missing_file_reports_read_error_not_no_file_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let o = base(&dir.path().join("c.db"))
+            .current_dir(dir.path())
+            .args(["submit", "missing.md"])
+            .output()
+            .unwrap();
+        assert_ne!(o.status.code(), Some(0));
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert!(!err.contains("no file name"), "{err}");
+        assert!(err.contains("missing.md"), "{err}");
+    }
+
+    #[test]
+    fn submit_dot_names_artifact_after_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let site = dir.path().join("mysite");
+        std::fs::create_dir(&site).unwrap();
+        std::fs::write(site.join("index.html"), "<p>hi</p>").unwrap();
+        let db = dir.path().join("c.db");
+        let o = base(&db)
+            .current_dir(&site)
+            .args(["submit", "."])
+            .output()
+            .unwrap();
+        assert_eq!(
+            o.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        let l = base(&db).arg("list").output().unwrap();
+        assert!(String::from_utf8_lossy(&l.stdout).contains("\"name\":\"mysite\""));
+    }
 }
 
 mod list_delete {

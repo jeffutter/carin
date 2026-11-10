@@ -103,13 +103,20 @@ pub fn run(command: Command, ctx: &Context) -> Result<u8, Error> {
             };
             let name = match name {
                 Some(n) => n,
-                None => std::fs::canonicalize(&path)
-                    .ok()
-                    .as_deref()
-                    .and_then(std::path::Path::file_name)
-                    .and_then(|n| n.to_str())
-                    .ok_or_else(|| Error::Usage(format!("no file name in {path:?}")))?
-                    .to_string(),
+                // Prefer the path's own last component so a missing file
+                // reaches read_input's error; canonicalize only for '.'/'..'.
+                None => {
+                    let p = std::path::Path::new(&path);
+                    p.file_name()
+                        .map(std::path::PathBuf::from)
+                        .or_else(|| {
+                            std::fs::canonicalize(p)
+                                .ok()
+                                .and_then(|c| c.file_name().map(std::path::PathBuf::from))
+                        })
+                        .and_then(|n| n.to_str().map(str::to_string))
+                        .ok_or_else(|| Error::Usage(format!("no file name in {path:?}")))?
+                }
             };
             let mut input = read_input(&path)?;
             if !input.dir {
