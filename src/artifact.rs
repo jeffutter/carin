@@ -7,6 +7,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::cli::Context;
+use crate::comments;
 use crate::db::{db_err, write_tx};
 use crate::error::Error;
 use crate::ids::new_artifact_id;
@@ -113,8 +114,9 @@ pub fn edit(
     id: &str,
     bytes: Vec<u8>,
     base: Option<i64>,
+    addresses: &[i64],
 ) -> Result<Ref, Error> {
-    append_revision(conn, ctx, id, base, |_, _| Ok(bytes))
+    append_revision(conn, ctx, id, base, addresses, |_, _| Ok(bytes))
 }
 
 /// Replace one Section of the latest markdown Revision. The splice runs
@@ -127,10 +129,11 @@ pub fn section_edit(
     query: &str,
     replacement: &[u8],
     base: Option<i64>,
+    addresses: &[i64],
 ) -> Result<Ref, Error> {
     let replacement = std::str::from_utf8(replacement)
         .map_err(|_| Error::Rejected("section replacement is not valid UTF-8".into()))?;
-    append_revision(conn, ctx, id, base, |kind, latest| {
+    append_revision(conn, ctx, id, base, addresses, |kind, latest| {
         let text = utf8_markdown(kind, latest)?;
         Ok(sections::splice(text, query, replacement)?.into_bytes())
     })
@@ -167,6 +170,7 @@ fn append_revision(
     ctx: &Context,
     id: &str,
     base: Option<i64>,
+    addresses: &[i64],
     produce: impl FnOnce(&str, &[u8]) -> Result<Vec<u8>, Error>,
 ) -> Result<Ref, Error> {
     write_tx(conn, |tx| {
@@ -201,6 +205,8 @@ fn append_revision(
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .map_err(db_err)?;
+        // Validate before any insert so a bad id leaves no Revision.
+        let threads = comments::check_addressable(tx, id, addresses)?;
         let bytes = produce(&kind, &latest_bytes)?;
         limits::check_file(bytes.len() as u64)?;
         limits::check_revision(bytes.len() as u64)?;
@@ -228,10 +234,12 @@ fn append_revision(
             [id],
         )
         .map_err(db_err)?;
-        Ok(Ref {
+        let new_ref = Ref {
             id: id.to_string(),
             revision: n,
-        })
+        };
+        comments::post_addressed(tx, ctx, id, &threads, &new_ref.to_string())?;
+        Ok(new_ref)
     })
 }
 

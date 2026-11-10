@@ -1364,4 +1364,177 @@ mod comments {
             "from stdin"
         );
     }
+
+    fn highest(db: &std::path::Path) -> i64 {
+        ok(db, &["comment", "list"])["highest_comment_id"]
+            .as_i64()
+            .unwrap()
+    }
+
+    #[test]
+    fn wait_returns_when_a_comment_arrives_from_another_process() {
+        use std::process::Stdio;
+        let (_d, db, id) = setup();
+        let start = std::time::Instant::now();
+        let child = base(&db)
+            .args(["comment", "list", &id, "--wait", "--timeout", "20"])
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        ok(
+            &db,
+            &["--role", "reviewer", "comment", "add", &id, "new one"],
+        );
+        let o = child.wait_with_output().unwrap();
+        assert_eq!(o.status.code(), Some(0));
+        assert!(start.elapsed() < std::time::Duration::from_secs(5));
+        let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(v["threads"][0]["body"], "new one");
+    }
+
+    #[test]
+    fn wait_timeout_exits_five_with_empty_result() {
+        let (_d, db, id) = setup();
+        ok(&db, &["comment", "add", &id, "old"]);
+        let before = highest(&db);
+        let o = run(&db, &["comment", "list", "--wait", "--timeout", "1"]);
+        assert_eq!(o.status.code(), Some(5));
+        assert!(o.stderr.is_empty());
+        let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(v["threads"].as_array().unwrap().len(), 0);
+        assert_eq!(v["highest_comment_id"], before);
+    }
+
+    #[test]
+    fn wait_with_satisfied_since_returns_at_once_and_unknown_artifact_is_3() {
+        let (_d, db, id) = setup();
+        ok(&db, &["comment", "add", &id, "a"]);
+        let t = std::time::Instant::now();
+        let o = run(&db, &["comment", "list", "--wait", "--since", "0"]);
+        assert_eq!(o.status.code(), Some(0));
+        assert!(t.elapsed() < std::time::Duration::from_secs(5));
+        assert_eq!(
+            code(
+                &db,
+                &["comment", "list", "nope", "--wait", "--timeout", "1"]
+            ),
+            Some(3)
+        );
+        assert_eq!(code(&db, &["comment", "list", "--timeout", "1"]), Some(2));
+    }
+
+    fn thread_replies(db: &std::path::Path, id: &str) -> Vec<serde_json::Value> {
+        ok(db, &["comment", "list", id, "--all"])["threads"]
+            .as_array()
+            .unwrap()
+            .clone()
+    }
+
+    #[test]
+    fn addresses_replies_in_each_thread_and_leaves_them_open() {
+        let (d, db, id) = setup();
+        let a = ok(&db, &["comment", "add", &id, "one"])["id"]
+            .as_i64()
+            .unwrap();
+        let b = ok(&db, &["comment", "add", &id, "two", "--section", "A > B"])["id"]
+            .as_i64()
+            .unwrap();
+        let f = d.path().join("n.md");
+        std::fs::write(&f, "# new\n").unwrap();
+        let list = format!("{a},{b},{a}");
+        let o = base(&db)
+            .args(["--author", "bot", "edit", &id])
+            .arg(&f)
+            .args(["--addresses", &list])
+            .output()
+            .unwrap();
+        assert_eq!(
+            o.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        for t in thread_replies(&db, &id) {
+            let r = t["replies"].as_array().unwrap();
+            assert_eq!(r.len(), 1);
+            assert_eq!(r[0]["body"], format!("addressed in {id}@2"));
+            assert_eq!(r[0]["author"], "bot");
+            assert_eq!(r[0]["role"], "agent");
+            assert_eq!(t["status"], "open");
+        }
+        // with --section: the section was replaced, so use a fresh doc
+        let (d2, db2, id2) = setup();
+        let c = ok(&db2, &["comment", "add", &id2, "x"])["id"]
+            .as_i64()
+            .unwrap();
+        let f2 = d2.path().join("s.md");
+        std::fs::write(&f2, "## B\nnew body\n").unwrap();
+        let o = base(&db2)
+            .args(["edit", &id2, "--section", "A > B"])
+            .arg(&f2)
+            .args(["--addresses", &c.to_string()])
+            .output()
+            .unwrap();
+        assert_eq!(
+            o.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        assert_eq!(
+            thread_replies(&db2, &id2)[0]["replies"][0]["body"],
+            format!("addressed in {id2}@2")
+        );
+    }
+
+    #[test]
+    fn bad_addresses_create_no_revision() {
+        let (d, db, id) = setup();
+        let root = ok(&db, &["comment", "add", &id, "r"])["id"]
+            .as_i64()
+            .unwrap();
+        let reply = ok(
+            &db,
+            &["comment", "add", &id, "re", "--reply", &root.to_string()],
+        )["id"]
+            .as_i64()
+            .unwrap();
+        let f = d.path().join("n.md");
+        std::fs::write(&f, "# new\n").unwrap();
+        // a comment of another Artifact in the same database
+        let other = submit(&db, d.path(), "# another one\n");
+        let foreign_here = ok(&db, &["comment", "add", &other, "f"])["id"]
+            .as_i64()
+            .unwrap();
+        for (ids, want) in [
+            (format!("{root},9999"), 3),
+            (reply.to_string(), 2),
+            (foreign_here.to_string(), 2),
+        ] {
+            let o = base(&db)
+                .args(["edit", &id])
+                .arg(&f)
+                .args(["--addresses", &ids])
+                .output()
+                .unwrap();
+            assert_eq!(o.status.code(), Some(want), "{ids}");
+            let out = base(&db)
+                .args(["get", &format!("{id}@2")])
+                .output()
+                .unwrap();
+            assert_eq!(
+                out.status.code(),
+                Some(3),
+                "{ids}: revision 2 must not exist"
+            );
+            assert!(
+                thread_replies(&db, &id)[0]["replies"]
+                    .as_array()
+                    .unwrap()
+                    .len()
+                    == 1
+            );
+        }
+    }
 }

@@ -63,7 +63,7 @@ One Rust table (an enum with descriptions) drives the CLI error handling and the
 - `edit <id> --section "A > B" <path|->` replaces a Section (markdown only).
 - Both create a new Revision of the latest and print the new `abc123@4`.
 - `--base <rev>` refuses a stale base with exit 6.
-- `--addresses 12,14` posts the auto-reply in each named Thread.
+- `--addresses 12,14` posts "addressed in abc123@4" in each named Thread as the new Revision's author and role, on the Thread's own Revision. It never resolves a Thread. Ids are checked before anything is written and the replies share the Revision's transaction: an unknown id exits 3, a reply or another Artifact's comment exits 2, and neither leaves a Revision.
 
 ### get and outline
 
@@ -87,7 +87,7 @@ Filters: `--kind`, `--session`, `--mine`, `--open` (only Artifacts with an open 
 - `comment resolve <thread-id>` and `comment reopen <thread-id>`.
 - `comment list [<id>]` shows open Threads, on any Revision, for the caller's Artifacts: with an explicit `--session` it is the Artifacts that Session made any Revision of (project ignored); with none (the env fallback Session does not filter) it falls back to the same scope as `list` and takes the same two widening flags. `--all` includes resolved Threads. `--since <id>` returns only Threads holding a Comment newer than the id (the whole Thread, replies included), the incremental view; the open/`--all` rule still applies on top, so a new reply in a resolved Thread surfaces only with `--all`. With an explicit `<id>` the Session scope is ignored. `--lines` takes `a-b` or a single line; a reply (`--reply <root-comment-id>`) conflicts with both locators. `--wait` blocks until there is something new, `--timeout <secs>` (default 60).
 - Output includes `highest_comment_id`, the highest id ever issued (it does not drop when an Artifact is deleted); every read returns it so the Agent passes it as the next `--since`. Each Thread shows `revision`, `latest_revision`, `stale`, the quoted text and the locator.
-- `--wait` is the CLI polling sqlite every 500 ms; it needs no server. A timeout is exit 5.
+- `--wait` is the CLI polling sqlite every 500 ms; it needs no server. It returns as soon as a Thread holds a Comment newer than `--since`; without `--since` the baseline is the highest Comment id when the command started, so a bare `--wait` means the next new Comment. A timeout is exit 5 and still prints the normal result (no Threads, the same `highest_comment_id`) on stdout, with nothing on stderr.
 
 ### serve
 

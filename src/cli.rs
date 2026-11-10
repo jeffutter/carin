@@ -84,6 +84,9 @@ pub enum Command {
         /// Replace only this markdown Section ("A > B"); the file must start with its heading
         #[arg(long)]
         section: Option<String>,
+        /// Reply "addressed in <ref>" in these Threads (root comment ids, comma-separated); they stay open
+        #[arg(long, value_delimiter = ',', value_name = "COMMENT_IDS")]
+        addresses: Vec<i64>,
     },
     /// Print an Artifact's content: `abc123` or `abc123@2`
     Get {
@@ -180,6 +183,13 @@ pub enum CommentAction {
         /// replies; the open/--all rule still applies
         #[arg(long, value_name = "COMMENT_ID")]
         since: Option<i64>,
+        /// Block until something newer than --since (default: the highest
+        /// Comment id now) exists; exit 5 on timeout
+        #[arg(long)]
+        wait: bool,
+        /// Seconds to wait before giving up
+        #[arg(long, default_value_t = 60, requires = "wait", value_name = "SECS")]
+        timeout: u64,
         /// Print a table instead of JSON
         #[arg(long)]
         text: bool,
@@ -308,6 +318,32 @@ mod tests {
         if std::env::var_os("CAIRN_SESSION").is_none() {
             assert_eq!(ctx.session.as_deref(), Some("fallback"));
         }
+    }
+
+    #[test]
+    fn wait_flags_parse() {
+        let c =
+            Cli::try_parse_from(["cairn", "comment", "list", "--wait", "--timeout", "5"]).unwrap();
+        assert!(matches!(
+            c.command,
+            Command::Comment {
+                action: CommentAction::List {
+                    wait: true,
+                    timeout: 5,
+                    ..
+                }
+            }
+        ));
+        assert!(Cli::try_parse_from(["cairn", "comment", "list", "--timeout", "5"]).is_err());
+    }
+
+    #[test]
+    fn addresses_splits_on_commas() {
+        let c = Cli::try_parse_from(["cairn", "edit", "x", "-", "--addresses", "12,14"]).unwrap();
+        assert!(matches!(
+            c.command,
+            Command::Edit { addresses, .. } if addresses == vec![12, 14]
+        ));
     }
 
     #[test]

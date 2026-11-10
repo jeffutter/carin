@@ -5,7 +5,7 @@ fn main() -> ExitCode {
         .map(|cli| cli.resolve(std::env::var("CLAUDE_CODE_SESSION_ID").ok()))
         .and_then(|(ctx, command)| cairn::run(command, &ctx));
     match result {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => ExitCode::from(code),
         Err(err) => {
             eprintln!("{}", err.to_json());
             ExitCode::from(err.exit_code())

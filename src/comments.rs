@@ -4,6 +4,8 @@
 //! and the `open`/`resolved` flag, the only mutable part of a Comment.
 //! Comments are never edited or deleted, and anchors are never rewritten.
 
+use std::time::{Duration, Instant};
+
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 
@@ -181,29 +183,7 @@ pub fn add(
                 (revision, Some(stored), None)
             }
         };
-        let loc = stored.as_ref();
-        tx.execute(
-            "INSERT INTO comments (artifact_id, revision, parent_id, author, role, session, body,
-                created_at, line_start, line_end, quoted_text, section_path, status)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, strftime('%Y-%m-%dT%H:%M:%fZ','now'),
-                ?8, ?9, ?10, ?11, ?12)",
-            params![
-                id,
-                revision,
-                parent_id,
-                ctx.author,
-                ctx.role.as_str(),
-                ctx.session,
-                body,
-                loc.and_then(|l| l.line_start),
-                loc.and_then(|l| l.line_end),
-                loc.and_then(|l| l.quoted_text.as_deref()),
-                loc.and_then(|l| l.section_path.as_deref()),
-                parent_id.is_none().then_some("open"),
-            ],
-        )
-        .map_err(db_err)?;
-        let new_id = tx.last_insert_rowid();
+        let new_id = insert_comment(tx, ctx, &id, revision, parent_id, body, stored.as_ref())?;
         let latest = latest_revision(tx, &id)?;
         Ok(Added {
             id: new_id,
@@ -216,6 +196,143 @@ pub fn add(
             highest_comment_id: highest_comment_id(tx)?,
         })
     })
+}
+
+/// Insert one Comment row: a root when `parent_id` is None (open, with its
+/// locator), otherwise a reply. Returns the new id.
+fn insert_comment(
+    tx: &Connection,
+    ctx: &Context,
+    artifact: &str,
+    revision: i64,
+    parent_id: Option<i64>,
+    body: &str,
+    loc: Option<&StoredLocator>,
+) -> Result<i64, Error> {
+    tx.execute(
+        "INSERT INTO comments (artifact_id, revision, parent_id, author, role, session, body,
+            created_at, line_start, line_end, quoted_text, section_path, status)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+            ?8, ?9, ?10, ?11, ?12)",
+        params![
+            artifact,
+            revision,
+            parent_id,
+            ctx.author,
+            ctx.role.as_str(),
+            ctx.session,
+            body,
+            loc.and_then(|l| l.line_start),
+            loc.and_then(|l| l.line_end),
+            loc.and_then(|l| l.quoted_text.as_deref()),
+            loc.and_then(|l| l.section_path.as_deref()),
+            parent_id.is_none().then_some("open"),
+        ],
+    )
+    .map_err(db_err)?;
+    Ok(tx.last_insert_rowid())
+}
+
+/// Check that every id names a root Comment of `artifact`, before anything is
+/// written. Returns the distinct (root id, its Revision) pairs in given order.
+pub(crate) fn check_addressable(
+    tx: &Connection,
+    artifact: &str,
+    ids: &[i64],
+) -> Result<Vec<(i64, i64)>, Error> {
+    let mut out: Vec<(i64, i64)> = Vec::new();
+    for &id in ids {
+        if out.iter().any(|(i, _)| *i == id) {
+            continue;
+        }
+        let (c_artifact, rev, parent): (String, i64, Option<i64>) = tx
+            .query_row(
+                "SELECT artifact_id, revision, parent_id FROM comments WHERE id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()
+            .map_err(db_err)?
+            .ok_or_else(|| Error::NotFound(format!("no comment {id}")))?;
+        if parent.is_some() {
+            return Err(Error::Usage(format!(
+                "comment {id} is a reply; name the Thread's root comment"
+            )));
+        }
+        if c_artifact != artifact {
+            return Err(Error::Usage(format!(
+                "comment {id} belongs to artifact {c_artifact}, not {artifact}"
+            )));
+        }
+        out.push((id, rev));
+    }
+    Ok(out)
+}
+
+/// Post "addressed in <revision ref>" in each checked Thread as the caller.
+/// Replies stay on their Thread's Revision and never change its status.
+pub(crate) fn post_addressed(
+    tx: &Connection,
+    ctx: &Context,
+    artifact: &str,
+    threads: &[(i64, i64)],
+    revision_ref: &str,
+) -> Result<(), Error> {
+    let body = format!("addressed in {revision_ref}");
+    for &(root, rev) in threads {
+        insert_comment(tx, ctx, artifact, rev, Some(root), &body, None)?;
+    }
+    Ok(())
+}
+
+/// Delay between database polls in [`wait`].
+pub const WAIT_POLL_MS: u64 = 500;
+
+pub enum WaitOutcome {
+    /// Something newer than the baseline exists.
+    Ready(CommentList),
+    /// The deadline passed with nothing new: no Threads, same
+    /// `highest_comment_id`.
+    TimedOut(CommentList),
+}
+
+/// Block until [`list`] has something newer than `q.since`, polling every
+/// [`WAIT_POLL_MS`]. Without `since` the baseline is the highest Comment id at
+/// entry, so a bare wait means "the next new Comment". Each poll reads its own
+/// snapshot, so a writer in another process is seen.
+pub fn wait(
+    conn: &Connection,
+    ctx: &Context,
+    q: &ListQuery,
+    timeout: Duration,
+) -> Result<WaitOutcome, Error> {
+    let deadline = Instant::now() + timeout;
+    let baseline = match q.since {
+        Some(n) => n,
+        None => {
+            if let Some(a) = &q.artifact {
+                latest_revision(conn, a)?;
+            }
+            highest_comment_id(conn)?
+        }
+    };
+    let newer = ListQuery {
+        artifact: q.artifact.clone(),
+        all: q.all,
+        since: Some(baseline),
+    };
+    let mut current = list(conn, ctx, &newer)?;
+    loop {
+        if !current.threads.is_empty() {
+            return Ok(WaitOutcome::Ready(current));
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return Ok(WaitOutcome::TimedOut(current));
+        }
+        std::thread::sleep((deadline - now).min(Duration::from_millis(WAIT_POLL_MS)));
+        current = list(conn, ctx, &newer)?;
+    }
 }
 
 /// Validate a root Comment's locator against its own Revision and compute

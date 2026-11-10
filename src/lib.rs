@@ -41,7 +41,11 @@ fn read_body(body: &str) -> Result<String, Error> {
     String::from_utf8(buf).map_err(|_| Error::Usage("comment body is not valid UTF-8".into()))
 }
 
-pub fn run(command: Command, ctx: &Context) -> Result<(), Error> {
+/// Run a command; the Ok value is the exit code (0, or 5 for a wait timeout).
+pub fn run(command: Command, ctx: &Context) -> Result<u8, Error> {
+    if let Command::Comment { action } = command {
+        return run_comment(action, ctx);
+    }
     match command {
         Command::Submit {
             path,
@@ -72,13 +76,14 @@ pub fn run(command: Command, ctx: &Context) -> Result<(), Error> {
             let mut conn = db::open(&ctx.db_path)?;
             let r = artifact::submit(&mut conn, ctx, artifact::SubmitInput { name, kind, bytes })?;
             println!("{}", serde_json::to_string(&r).expect("ref serializes"));
-            Ok(())
+            Ok(0)
         }
         Command::Edit {
             id,
             path,
             base,
             section,
+            addresses,
         } => {
             if id.contains('@') {
                 return Err(Error::Usage(
@@ -88,11 +93,13 @@ pub fn run(command: Command, ctx: &Context) -> Result<(), Error> {
             let bytes = read_input(&path)?;
             let mut conn = db::open(&ctx.db_path)?;
             let r = match section {
-                Some(q) => artifact::section_edit(&mut conn, ctx, &id, &q, &bytes, base)?,
-                None => artifact::edit(&mut conn, ctx, &id, bytes, base)?,
+                Some(q) => {
+                    artifact::section_edit(&mut conn, ctx, &id, &q, &bytes, base, &addresses)?
+                }
+                None => artifact::edit(&mut conn, ctx, &id, bytes, base, &addresses)?,
             };
             println!("{}", serde_json::to_string(&r).expect("ref serializes"));
-            Ok(())
+            Ok(0)
         }
         Command::List {
             kind,
@@ -129,7 +136,7 @@ pub fn run(command: Command, ctx: &Context) -> Result<(), Error> {
             } else {
                 println!("{}", serde_json::json!({ "artifacts": rows }));
             }
-            Ok(())
+            Ok(0)
         }
         Command::Delete { ids, yes } => {
             if !yes {
@@ -145,9 +152,9 @@ pub fn run(command: Command, ctx: &Context) -> Result<(), Error> {
             let mut conn = db::open(&ctx.db_path)?;
             let deleted = artifact::delete(&mut conn, &ids)?;
             println!("{}", serde_json::json!({ "deleted": deleted }));
-            Ok(())
+            Ok(0)
         }
-        Command::Comment { action } => run_comment(action, ctx),
+        Command::Comment { .. } => unreachable!("handled above"),
         Command::Outline { target } => {
             let (id, rev) = artifact::parse_target(&target)?;
             let conn = db::open(&ctx.db_path)?;
@@ -156,7 +163,7 @@ pub fn run(command: Command, ctx: &Context) -> Result<(), Error> {
                 "{}",
                 serde_json::json!({ "sections": sections::outline(&text) })
             );
-            Ok(())
+            Ok(0)
         }
         Command::Get { target, section } => {
             let (id, rev) = artifact::parse_target(&target)?;
@@ -172,11 +179,12 @@ pub fn run(command: Command, ctx: &Context) -> Result<(), Error> {
             out.write_all(&bytes)
                 .and_then(|_| out.flush())
                 .map_err(|e| Error::Unexpected(format!("write failed: {e}")))
+                .map(|_| 0)
         }
     }
 }
 
-fn run_comment(action: CommentAction, ctx: &Context) -> Result<(), Error> {
+fn run_comment(action: CommentAction, ctx: &Context) -> Result<u8, Error> {
     let print = |v: serde_json::Value| println!("{v}");
     let action_kind = match &action {
         CommentAction::Resolve { .. } => "resolve",
@@ -210,6 +218,8 @@ fn run_comment(action: CommentAction, ctx: &Context) -> Result<(), Error> {
             target,
             all,
             since,
+            wait,
+            timeout,
             text,
         } => {
             if let Some(t) = &target
@@ -225,15 +235,23 @@ fn run_comment(action: CommentAction, ctx: &Context) -> Result<(), Error> {
                 all,
                 since,
             };
-            let r = comments::list(&conn, ctx, &q)?;
+            let (r, exit) = if wait {
+                match comments::wait(&conn, ctx, &q, std::time::Duration::from_secs(timeout))? {
+                    comments::WaitOutcome::Ready(r) => (r, 0),
+                    comments::WaitOutcome::TimedOut(r) => (r, error::EXIT_WAIT_TIMEOUT),
+                }
+            } else {
+                (comments::list(&conn, ctx, &q)?, 0)
+            };
             if text {
                 print!("{}", comment_table(&r));
             } else {
                 print(serde_json::to_value(&r).expect("list serializes"));
             }
+            return Ok(exit);
         }
     }
-    Ok(())
+    Ok(0)
 }
 
 fn list_table(rows: &[artifact::ListRow]) -> String {
