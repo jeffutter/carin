@@ -5,7 +5,9 @@
 //! written, and recorded in the `embeds` table. The stored markdown text is
 //! never rewritten. The table deliberately has no foreign key on the target:
 //! deleting an embedded Artifact is allowed, and the dangling row lets the UI
-//! show a placeholder. Only image syntax counts; other URL schemes are ignored.
+//! show a placeholder. A reference the previous Revision already recorded is
+//! carried forward if its target has since gone, so it cannot block later
+//! edits; new references are always validated. Only image syntax counts; other URL schemes are ignored.
 
 use pulldown_cmark::{Event, Options, Parser, Tag};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
@@ -55,45 +57,78 @@ pub fn extract(text: &str) -> Result<Vec<Ref>, Error> {
 
 /// Validate and record the embeds of markdown Revision `owner_id@owner_rev`.
 /// Runs inside the writer's transaction, so a rejection rolls the Revision back.
-pub fn record(tx: &Transaction, owner_id: &str, owner_rev: i64, text: &str) -> Result<(), Error> {
+///
+/// `prev_rev` is the owner's previous Revision. A reference that Revision
+/// already recorded (same target, same pinned-ness, and for a pinned one the
+/// same `@N`) is carried forward when its target or pinned Revision has since
+/// disappeared, so a dangling embed never blocks an unrelated edit. New or
+/// changed references are always fully validated.
+pub fn record(
+    tx: &Transaction,
+    owner_id: &str,
+    owner_rev: i64,
+    prev_rev: Option<i64>,
+    text: &str,
+) -> Result<(), Error> {
+    let prior = match prev_rev {
+        Some(p) => for_revision(tx, owner_id, p)?,
+        None => Vec::new(),
+    };
     for (ordinal, r) in extract(text)?.into_iter().enumerate() {
         let shown = match r.pinned {
             Some(n) => format!("cairn:{}@{n}", r.target_id),
             None => format!("cairn:{}", r.target_id),
         };
-        let kind: String = tx
+        let carried = prior.iter().find(|e| {
+            e.target_id == r.target_id
+                && e.pinned == r.pinned.is_some()
+                && r.pinned.is_none_or(|n| e.target_revision == n)
+        });
+        let kind: Option<String> = tx
             .query_row(
                 "SELECT kind FROM artifacts WHERE id = ?1",
                 [&r.target_id],
                 |row| row.get(0),
             )
             .optional()
-            .map_err(db_err)?
-            .ok_or_else(|| Error::Rejected(format!("embed {shown}: no such artifact")))?;
-        if kind != "image" && kind != "diagram" {
-            return Err(Error::Rejected(format!(
-                "embed {shown} is a {kind} Artifact; only image and diagram can be embedded"
-            )));
-        }
-        let revision = match r.pinned {
-            Some(n) => {
-                let found: Option<i64> = tx
-                    .query_row(
-                        "SELECT number FROM revisions WHERE artifact_id = ?1 AND number = ?2",
-                        params![r.target_id, n],
-                        |row| row.get(0),
-                    )
-                    .optional()
-                    .map_err(db_err)?;
-                found.ok_or_else(|| Error::Rejected(format!("embed {shown}: no revision {n}")))?
+            .map_err(db_err)?;
+        let exists = kind.is_some();
+        let resolved: Option<i64> = match kind {
+            None => None,
+            Some(kind) => {
+                if kind != "image" && kind != "diagram" {
+                    return Err(Error::Rejected(format!(
+                        "embed {shown} is a {kind} Artifact; only image and diagram can be embedded"
+                    )));
+                }
+                match r.pinned {
+                    Some(n) => tx
+                        .query_row(
+                            "SELECT number FROM revisions WHERE artifact_id = ?1 AND number = ?2",
+                            params![r.target_id, n],
+                            |row| row.get(0),
+                        )
+                        .optional()
+                        .map_err(db_err)?,
+                    None => tx
+                        .query_row(
+                            "SELECT MAX(number) FROM revisions WHERE artifact_id = ?1",
+                            [&r.target_id],
+                            |row| row.get(0),
+                        )
+                        .map_err(db_err)?,
+                }
             }
-            None => tx
-                .query_row(
-                    "SELECT MAX(number) FROM revisions WHERE artifact_id = ?1",
-                    [&r.target_id],
-                    |row| row.get(0),
-                )
-                .map_err(db_err)?,
+        };
+        let revision = match (resolved, carried) {
+            (Some(n), _) => n,
+            (None, Some(c)) => c.target_revision,
+            (None, None) => {
+                return Err(Error::Rejected(match r.pinned {
+                    Some(n) if exists => format!("embed {shown}: no revision {n}"),
+                    _ => format!("embed {shown}: no such artifact"),
+                }));
+            }
         };
         tx.execute(
             "INSERT INTO embeds (artifact_id, revision, ordinal, target_id, target_revision, pinned)

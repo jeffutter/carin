@@ -102,17 +102,19 @@ pub fn submit(conn: &mut Connection, ctx: &Context, input: SubmitInput) -> Resul
         )
         .map_err(db_err)?;
         insert_files(tx, &id, 1, &files)?;
-        record_embeds(tx, input.kind == Kind::Markdown, &id, 1, &files)?;
+        record_embeds(tx, input.kind == Kind::Markdown, &id, 1, None, &files)?;
         Ok(Ref { id, revision: 1 })
     })
 }
 
-/// Validate and record the embeds of a new markdown Revision.
+/// Validate and record the embeds of a new markdown Revision. `prev_rev` is
+/// the Revision it replaces; its dangling embeds are tolerated.
 fn record_embeds(
     tx: &rusqlite::Transaction,
     is_markdown: bool,
     id: &str,
     revision: i64,
+    prev_rev: Option<i64>,
     files: &[FileInput],
 ) -> Result<(), Error> {
     if !is_markdown {
@@ -121,7 +123,7 @@ fn record_embeds(
     for f in files {
         let text = std::str::from_utf8(&f.bytes)
             .map_err(|_| Error::Rejected("markdown is not valid UTF-8".into()))?;
-        crate::embeds::record(tx, id, revision, text)?;
+        crate::embeds::record(tx, id, revision, prev_rev, text)?;
     }
     Ok(())
 }
@@ -368,7 +370,14 @@ fn append_revision(
         )
         .map_err(db_err)?;
         insert_files(tx, id, n, &files)?;
-        record_embeds(tx, kind == Kind::Markdown.as_str(), id, n, &files)?;
+        record_embeds(
+            tx,
+            kind == Kind::Markdown.as_str(),
+            id,
+            n,
+            Some(latest),
+            &files,
+        )?;
         tx.execute(
             "UPDATE artifacts SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?1",
             [id],

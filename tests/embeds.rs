@@ -159,3 +159,35 @@ fn deleting_an_embedded_artifact_succeeds_and_embeds_still_list() {
     assert_eq!(e.len(), 1);
     assert_eq!(e[0].target_id, img);
 }
+
+#[test]
+fn dangling_embed_does_not_block_later_edits() {
+    let fx = Fx::new();
+    let img = fx.submit("p.png", &[1]);
+    let text = format!("# A\n\n![a](cairn:{img}@1)\n\n# B\n\nold\n");
+    let md = id_of(&serde_json::from_slice(&fx.md(&text).stdout).unwrap());
+    assert_eq!(
+        run(&fx.db, &["delete", "--yes", &img]).status.code(),
+        Some(0)
+    );
+
+    let o = fx.edit(&md, &format!("{text}more\n"));
+    assert_eq!(o.status.code(), Some(0), "{}", msg(&o));
+    let e = fx.embeds(&md, 2);
+    assert_eq!(
+        (e.len(), e[0].target_id.as_str(), e[0].target_revision),
+        (1, img.as_str(), 1)
+    );
+
+    let f = file(fx.dir.path(), "s.md", b"# B\n\nnew\n");
+    let o = run(&fx.db, &["edit", &md, "--section", "B", &f]);
+    assert_eq!(o.status.code(), Some(0), "{}", msg(&o));
+    assert_eq!(fx.embeds(&md, 3).len(), 1);
+
+    // A newly added or changed reference to the deleted Artifact is rejected.
+    let o = fx.edit(&md, &format!("![a](cairn:{img}@1)\n![b](cairn:{img})\n"));
+    assert_eq!(o.status.code(), Some(4));
+    assert!(msg(&o).contains("no such artifact"), "{}", msg(&o));
+    let o = fx.edit(&md, &format!("![a](cairn:{img}@2)\n"));
+    assert_eq!(o.status.code(), Some(4));
+}
