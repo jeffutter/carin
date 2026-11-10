@@ -70,15 +70,25 @@
           cairn skill > $out/SKILL.md
           cairn skill --check $out/SKILL.md
         '';
+        # The Herdr mod (herdr/cairn/mods/cairn), laid out as a Herdr home's mods/ folder so
+        # another flake can link $out/mods/cairn into ~/.config/herdr-app/mods/. The mod's
+        # cairn binary is pinned to this flake's package.
+        herdr-mod = pkgs.runCommand "cairn-herdr-mod" { } ''
+          mkdir -p $out/mods
+          cp -r ${./herdr/cairn/mods/cairn} $out/mods/cairn
+          chmod -R u+w $out/mods/cairn
+          substituteInPlace $out/mods/cairn/main.js --replace-fail "@cairn@" "${cairn}/bin/cairn"
+        '';
       in
       {
         packages = {
           default = cairn;
-          inherit skill;
+          inherit skill herdr-mod;
         };
 
         checks = {
           build = cairn;
+          inherit herdr-mod;
           clippy = craneLib.cargoClippy (commonArgs // {
             inherit cargoArtifacts;
             cargoClippyExtraArgs = "--all-targets -- -D warnings";

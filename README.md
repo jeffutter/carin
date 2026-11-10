@@ -93,3 +93,7 @@ The UI and artifact content are served from different ports, so a hostile HTML p
 ## More documentation
 
 The design is written down in [`docs/`](docs/README.md): the [CLI reference](docs/cli.md), the [JSON API](docs/api.md) (OpenAPI schema in [`docs/openapi.json`](docs/openapi.json)), the [data model](docs/data-model.md), and the [architecture decisions](docs/adr/). Terms such as artifact, revision, and thread are defined in the [glossary](GLOSSARY.md). Contributors should read [`CLAUDE.md`](CLAUDE.md) for the build and test commands.
+
+## Herdr
+
+[`herdr/`](herdr/README.md) holds a [Herdr](https://herdr.dev) mod: a side panel that follows the project's artifacts and opens on a new or updated one. The flake exports it as `packages.<system>.herdr-mod`.

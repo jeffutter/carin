@@ -1,0 +1,47 @@
+# Cairn for Herdr
+
+A [Herdr](https://herdr.dev) mod: a side panel that follows the Artifacts cairn holds for the focused space's project. It opens by itself when an Artifact is new or gets a new Revision, and shows that Artifact: markdown (with embedded images and diagrams), images, and diagrams, plus its comment Threads.
+
+![Cairn for Herdr](cairn/preview.png)
+
+[`cairn/`](cairn/) is the shareable folder: `mods/cairn/`, the [`RECIPE.md`](cairn/RECIPE.md) a build is written from, and `preview.png`.
+
+## What it needs
+
+- `cairn` (this repo's binary). The mod runs `cairn list`, `get`, `embeds`, `comment list` and `view` in the space's folder, so cairn's project scoping decides which Artifacts show. It needs the `embeds` command and `get --out` for diagrams, so use a cairn built from this repo at or after those commits.
+- A layout with a side panel: a stack with id `panel-body` inside a column with id `panel`, holding a block `{ "id": "cairn", "content": { "mod": "cairn" } }`. Herdr's `main` layout has the `panel` and `panel-body` nodes (Files and Changes). Add a `cairn` child to `panel-body`, and a tab-bar button that selects it:
+
+  ```js
+  run("layout.select", { stack: "panel-body", child: "cairn" });
+  run("layout.show", { id: "panel" });
+  ```
+
+  Herdr's shipped layouts and the `tabs` mod are read-only, so clone them (`herdr-app do layout.clone`, `herdr-app do mod.clone`) and edit the clones. The `tabs` mod's `panelButton("changes", ...)` line is the one to copy for a Cairn button.
+- "Open" in the panel header opens the web UI, so run `cairn serve` for that. Everything else reads sqlite directly and needs no server.
+
+## Install by hand
+
+Copy `cairn/mods/cairn/` to `~/.config/herdr-app/mods/cairn/` and run `herdr-app check ~/.config/herdr-app/mods/cairn`. The mod looks for `cairn` on `PATH`.
+
+## Install with nix
+
+The flake exports `packages.<system>.herdr-mod`: the mod laid out as a Herdr home's `mods/` folder, with its cairn binary pinned to the same flake's `cairn` package.
+
+```nix
+# inputs.cairn.url = "github:<owner>/cairn";
+home.file.".config/herdr-app/mods/cairn" = {
+  source = "${inputs.cairn.packages.${pkgs.system}.herdr-mod}/mods/cairn";
+  recursive = true; # Herdr writes jsconfig.json and .d.ts files into mod folders
+};
+```
+
+Link the folder per file (`recursive = true`) so Herdr can write its own files beside the mod's.
+
+## Use
+
+- Click the Cairn button to toggle the panel. It lists the project's Artifacts, newest activity first. Click one to read it.
+- When an Artifact is created or gets a new Revision, the panel opens on it. The first look at a space is a silent baseline, so existing Artifacts do not read as new.
+- Header: back to the list, and **Open** to view the Artifact in the web UI (it says so if `cairn serve` is not running).
+- html bundles are not drawn: Herdr has no web view. The panel says so, and Open shows them.
+
+The mod only reads cairn. Images and diagrams are fetched into `~/.config/herdr-app/data/cairn-cache/<id>@<rev>/` once per Revision.
