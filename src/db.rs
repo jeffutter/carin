@@ -77,6 +77,19 @@ CREATE INDEX comments_artifact ON comments(artifact_id, id);
 CREATE INDEX comments_parent ON comments(parent_id);
 ";
 
+const SCHEMA_V3: &str = "
+CREATE TABLE embeds (
+    artifact_id TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    ordinal INTEGER NOT NULL,
+    target_id TEXT NOT NULL,
+    target_revision INTEGER NOT NULL,
+    pinned INTEGER NOT NULL,
+    PRIMARY KEY (artifact_id, revision, ordinal),
+    FOREIGN KEY (artifact_id, revision) REFERENCES revisions(artifact_id, number) ON DELETE CASCADE
+);
+";
+
 /// Open (creating the directory and file on first use) and migrate.
 pub fn open(path: &Path) -> Result<Connection, Error> {
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
@@ -125,6 +138,15 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         }
         tx.commit()?;
     }
+    if version < 3 {
+        let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+        let v: i64 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        if v < 3 {
+            tx.execute_batch(SCHEMA_V3)?;
+            tx.pragma_update(None, "user_version", 3)?;
+        }
+        tx.commit()?;
+    }
     Ok(())
 }
 
@@ -165,11 +187,11 @@ mod tests {
         assert_eq!(pragma(&conn, "foreign_keys"), "1");
         assert_eq!(pragma(&conn, "busy_timeout"), "5000");
         assert_eq!(pragma(&conn, "auto_vacuum"), "1");
-        assert_eq!(pragma(&conn, "user_version"), "2");
+        assert_eq!(pragma(&conn, "user_version"), "3");
     }
 
     #[test]
-    fn v1_database_upgrades_to_v2_keeping_rows() {
+    fn v1_database_upgrades_to_v3_keeping_rows() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("c.db");
         {
@@ -182,7 +204,7 @@ mod tests {
             .unwrap();
         }
         let conn = open(&p).unwrap();
-        assert_eq!(pragma(&conn, "user_version"), "2");
+        assert_eq!(pragma(&conn, "user_version"), "3");
         let n: i64 = conn
             .query_row("SELECT COUNT(*) FROM artifacts", [], |r| r.get(0))
             .unwrap();

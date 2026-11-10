@@ -5,6 +5,7 @@ pub mod comments;
 pub mod config;
 pub mod db;
 pub mod diagram;
+pub mod embeds;
 pub mod error;
 pub mod ids;
 pub mod kind;

@@ -102,8 +102,28 @@ pub fn submit(conn: &mut Connection, ctx: &Context, input: SubmitInput) -> Resul
         )
         .map_err(db_err)?;
         insert_files(tx, &id, 1, &files)?;
+        record_embeds(tx, input.kind == Kind::Markdown, &id, 1, &files)?;
         Ok(Ref { id, revision: 1 })
     })
+}
+
+/// Validate and record the embeds of a new markdown Revision.
+fn record_embeds(
+    tx: &rusqlite::Transaction,
+    is_markdown: bool,
+    id: &str,
+    revision: i64,
+    files: &[FileInput],
+) -> Result<(), Error> {
+    if !is_markdown {
+        return Ok(());
+    }
+    for f in files {
+        let text = std::str::from_utf8(&f.bytes)
+            .map_err(|_| Error::Rejected("markdown is not valid UTF-8".into()))?;
+        crate::embeds::record(tx, id, revision, text)?;
+    }
+    Ok(())
 }
 
 /// Store a Revision's file set. Blobs are content-addressed, so a file that
@@ -348,6 +368,7 @@ fn append_revision(
         )
         .map_err(db_err)?;
         insert_files(tx, id, n, &files)?;
+        record_embeds(tx, kind == Kind::Markdown.as_str(), id, n, &files)?;
         tx.execute(
             "UPDATE artifacts SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?1",
             [id],
