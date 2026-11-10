@@ -2733,6 +2733,58 @@ mod diagrams {
             Some(2)
         );
     }
+
+    #[test]
+    #[cfg(not(cairn_pele_stub))]
+    fn render_prints_svg_for_mermaid() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("c.db");
+        let id = id_of(&run(&db, &["submit", &file(dir.path(), "a.mmd", FLOW)]));
+        let o = run(&db, &["get", &id, "--render"]);
+        assert_eq!(o.status.code(), Some(0));
+        let out = String::from_utf8(o.stdout).unwrap();
+        assert!(out.contains("<svg"), "{out}");
+    }
+
+    #[test]
+    fn render_prints_stored_svg_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("c.db");
+        let f = file(dir.path(), "d.svg", SVG);
+        let id = id_of(&run(&db, &["submit", &f, "--format", "svg"]));
+        let o = run(&db, &["get", &id, "--render"]);
+        assert_eq!(o.status.code(), Some(0));
+        assert_eq!(o.stdout, SVG.as_bytes());
+    }
+
+    #[test]
+    fn render_rejects_non_diagrams_and_conflicting_flags() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("c.db");
+        let md = file(dir.path(), "a.md", "# x\n");
+        let id = id_of(&run(&db, &["submit", &md]));
+        let o = run(&db, &["get", &id, "--render"]);
+        assert_eq!(o.status.code(), Some(2));
+        assert!(String::from_utf8_lossy(&o.stderr).contains("--render"));
+        let svg = file(dir.path(), "d.svg", SVG);
+        let did = id_of(&run(&db, &["submit", &svg, "--format", "svg"]));
+        let out = dir.path().join("o");
+        assert_eq!(
+            run(
+                &db,
+                &["get", &did, "--render", "--out", out.to_str().unwrap()]
+            )
+            .status
+            .code(),
+            Some(2)
+        );
+        assert_eq!(
+            run(&db, &["get", &did, "--render", "--section", "A"])
+                .status
+                .code(),
+            Some(2)
+        );
+    }
 }
 
 mod serve {

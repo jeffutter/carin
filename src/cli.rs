@@ -125,6 +125,9 @@ pub enum Command {
         /// Directory to write an image or html Artifact's files into
         #[arg(long)]
         out: Option<String>,
+        /// Print a diagram Artifact as SVG (mermaid is rendered; svg is printed as stored)
+        #[arg(long, conflicts_with_all = ["out", "section"])]
+        render: bool,
     },
     /// Print the web UI URL of an Artifact (`abc123` or `abc123@2`) without checking a server
     View {

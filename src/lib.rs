@@ -305,9 +305,22 @@ pub fn run(command: Command, ctx: &Context, fmt: Format) -> Result<u8, Error> {
             target,
             section,
             out,
+            render,
         } => {
             let (id, rev) = artifact::parse_target(&target)?;
             let conn = db::open(&ctx.db_path)?;
+            if render {
+                if artifact::kind_of(&conn, &id)? != Some(kind::Kind::Diagram) {
+                    return Err(Error::Usage("--render is for diagram Artifacts".into()));
+                }
+                let svg = diagram::render_revision(&conn, &id, rev)?;
+                let mut out = std::io::stdout().lock();
+                return out
+                    .write_all(svg.as_bytes())
+                    .and_then(|_| out.flush())
+                    .map_err(|e| Error::Unexpected(format!("write failed: {e}")))
+                    .map(|_| 0);
+            }
             let (kind, files) = artifact::get_files(&conn, &id, rev)?;
             if matches!(kind, kind::Kind::Html | kind::Kind::Image) {
                 if section.is_some() {
