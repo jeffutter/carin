@@ -1433,7 +1433,10 @@ mod comments {
     #[test]
     fn wait_with_satisfied_since_returns_at_once_and_unknown_artifact_is_3() {
         let (_d, db, id) = setup();
-        ok(&db, &["comment", "add", &id, "a"]);
+        ok(
+            &db,
+            &["--author", "someone-else", "comment", "add", &id, "a"],
+        );
         let t = std::time::Instant::now();
         let o = run(&db, &["comment", "list", "--wait", "--since", "0"]);
         assert_eq!(o.status.code(), Some(0));
@@ -1446,6 +1449,57 @@ mod comments {
             Some(3)
         );
         assert_eq!(code(&db, &["comment", "list", "--timeout", "1"]), Some(2));
+    }
+
+    #[test]
+    fn wait_ignores_own_addresses_replies_but_wakes_on_others() {
+        let (d, db, id) = setup();
+        let a = ok(
+            &db,
+            &[
+                "--author", "rev", "--role", "reviewer", "comment", "add", &id, "fix",
+            ],
+        )["id"]
+            .as_i64()
+            .unwrap();
+        let since = highest(&db).to_string();
+        let f = d.path().join("n.md");
+        std::fs::write(&f, "# new\n").unwrap();
+        let o = base(&db)
+            .args(["--author", "bot", "edit", &id])
+            .arg(&f)
+            .args(["--addresses", &a.to_string()])
+            .output()
+            .unwrap();
+        assert!(o.status.success());
+        let wait = |author: &str| {
+            run(
+                &db,
+                &[
+                    "--author",
+                    author,
+                    "comment",
+                    "list",
+                    &id,
+                    "--wait",
+                    "--since",
+                    &since,
+                    "--timeout",
+                    "1",
+                ],
+            )
+        };
+        assert_eq!(wait("bot").status.code(), Some(5));
+        // Someone else sees the reply as new.
+        assert_eq!(wait("other").status.code(), Some(0));
+        // A different author's later comment wakes the editor.
+        ok(
+            &db,
+            &[
+                "--author", "rev", "--role", "reviewer", "comment", "add", &id, "more",
+            ],
+        );
+        assert_eq!(wait("bot").status.code(), Some(0));
     }
 
     fn thread_replies(db: &std::path::Path, id: &str) -> Vec<serde_json::Value> {

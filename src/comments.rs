@@ -325,7 +325,7 @@ pub fn wait(
         since: Some(baseline),
         scope: q.scope.clone(),
     };
-    let mut current = list(conn, ctx, &newer)?;
+    let mut current = list_inner(conn, ctx, &newer, true)?;
     loop {
         if !current.threads.is_empty() {
             return Ok(WaitOutcome::Ready(current));
@@ -335,7 +335,7 @@ pub fn wait(
             return Ok(WaitOutcome::TimedOut(current));
         }
         std::thread::sleep((deadline - now).min(Duration::from_millis(WAIT_POLL_MS)));
-        current = list(conn, ctx, &newer)?;
+        current = list_inner(conn, ctx, &newer, true)?;
     }
 }
 
@@ -460,6 +460,18 @@ pub fn set_status(
 /// another Session edits), and with no explicit Session (the env fallback never
 /// filters) the Project scope of `q.scope` applies, the same as `list`.
 pub fn list(conn: &Connection, ctx: &Context, q: &ListQuery) -> Result<CommentList, Error> {
+    list_inner(conn, ctx, q, false)
+}
+
+/// [`list`], optionally not counting the caller's own Comments (same author
+/// and Session) as newer than `q.since`. [`wait`] uses this so the replies
+/// that `edit --addresses` writes do not wake the editor's own wait.
+fn list_inner(
+    conn: &Connection,
+    ctx: &Context,
+    q: &ListQuery,
+    exclude_own: bool,
+) -> Result<CommentList, Error> {
     // One snapshot so highest_comment_id covers everything the list shows.
     let tx = conn.unchecked_transaction().map_err(db_err)?;
     let highest = highest_comment_id(&tx)?;
@@ -484,15 +496,29 @@ pub fn list(conn: &Connection, ctx: &Context, q: &ListQuery) -> Result<CommentLi
               WHERE r.artifact_id = c.artifact_id
                 AND r.session = ?2))
          AND (?3 = 1 OR c.status = 'open')
-         AND (?4 IS NULL OR c.id > ?4
-              OR EXISTS (SELECT 1 FROM comments x WHERE x.parent_id = c.id AND x.id > ?4))
+         AND (?4 IS NULL
+              OR (c.id > ?4 AND NOT (?9 = 1 AND c.author = ?10 AND c.session IS ?11))
+              OR EXISTS (SELECT 1 FROM comments x WHERE x.parent_id = c.id AND x.id > ?4
+                         AND NOT (?9 = 1 AND x.author = ?10 AND x.session IS ?11)))
          AND EXISTS (SELECT 1 FROM artifacts a WHERE a.id = c.artifact_id AND {})",
         scope.sql("a", 5)
     );
     let threads = load_threads(
         &tx,
         &filter,
-        params![q.artifact, session, q.all as i64, q.since, sn, sr, sa, sw],
+        params![
+            q.artifact,
+            session,
+            q.all as i64,
+            q.since,
+            sn,
+            sr,
+            sa,
+            sw,
+            exclude_own as i64,
+            ctx.author,
+            ctx.session
+        ],
     )?;
     Ok(CommentList {
         threads,
