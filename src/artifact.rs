@@ -5,6 +5,7 @@ use std::fmt;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use utoipa::ToSchema;
 
 use crate::bundle::{self, FileInput, Input, RawFile};
 use crate::cli::Context;
@@ -618,6 +619,8 @@ pub fn get(conn: &Connection, id: &str, revision: Option<i64>) -> Result<Vec<u8>
 /// Filters for [`list`]. `session` and `mine` look at the latest Revision,
 /// the one the AUTHOR column shows.
 pub struct ListFilter {
+    /// Only this Artifact.
+    pub id: Option<String>,
     pub kind: Option<Kind>,
     /// Latest Revision made in this Session.
     pub session: Option<String>,
@@ -631,7 +634,7 @@ pub struct ListFilter {
     pub scope: ScopeFilter,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ListRow {
     pub id: String,
     pub kind: String,
@@ -646,6 +649,150 @@ pub struct ListRow {
     pub project: Option<String>,
     pub project_root: Option<String>,
     pub worktree: Option<String>,
+}
+
+/// What `list` prints on the CLI and `GET /api/v1/artifacts` returns.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ArtifactList {
+    pub items: Vec<ListRow>,
+}
+
+/// One Artifact: its list row plus what a list leaves out.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ArtifactDetail {
+    #[serde(flatten)]
+    pub row: ListRow,
+    /// Diagram format (`mermaid` or `svg`); null for other Kinds.
+    pub format: Option<String>,
+    pub created_at: String,
+}
+
+/// One Revision's attribution.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RevisionSummary {
+    pub number: i64,
+    pub author: String,
+    pub role: String,
+    pub session: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RevisionList {
+    pub items: Vec<RevisionSummary>,
+}
+
+/// One stored file of a Revision, without its bytes.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct FileEntry {
+    pub path: String,
+    pub media_type: String,
+    pub size: i64,
+    /// Lowercase hex SHA-256 of the file's bytes.
+    pub sha256: String,
+}
+
+/// A Revision as a file manifest.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RevisionManifest {
+    pub artifact: String,
+    #[serde(flatten)]
+    pub revision: RevisionSummary,
+    pub files: Vec<FileEntry>,
+}
+
+/// An Artifact by id, or NotFound.
+pub fn detail(conn: &Connection, id: &str) -> Result<ArtifactDetail, Error> {
+    let f = ListFilter {
+        id: Some(id.to_string()),
+        kind: None,
+        session: None,
+        author: None,
+        open: false,
+        older_than_secs: None,
+        limit: 1,
+        scope: ScopeFilter::unscoped(),
+    };
+    let row = list(conn, &f)?
+        .pop()
+        .ok_or_else(|| Error::NotFound(format!("no artifact {id}")))?;
+    let (format, created_at) = conn
+        .query_row(
+            "SELECT format, created_at FROM artifacts WHERE id = ?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(db_err)?;
+    Ok(ArtifactDetail {
+        row,
+        format,
+        created_at,
+    })
+}
+
+fn revision_summaries(
+    conn: &Connection,
+    id: &str,
+    only: Option<i64>,
+) -> Result<Vec<RevisionSummary>, Error> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT number, author, role, session, created_at FROM revisions
+             WHERE artifact_id = ?1 AND (?2 IS NULL OR number = ?2) ORDER BY number",
+        )
+        .map_err(db_err)?;
+    stmt.query_map(params![id, only], |r| {
+        Ok(RevisionSummary {
+            number: r.get(0)?,
+            author: r.get(1)?,
+            role: r.get(2)?,
+            session: r.get(3)?,
+            created_at: r.get(4)?,
+        })
+    })
+    .map_err(db_err)?
+    .collect::<Result<Vec<_>, _>>()
+    .map_err(db_err)
+}
+
+/// Every Revision of an Artifact, oldest first. NotFound for no such Artifact.
+pub fn revisions(conn: &Connection, id: &str) -> Result<RevisionList, Error> {
+    if kind_of(conn, id)?.is_none() {
+        return Err(Error::NotFound(format!("no artifact {id}")));
+    }
+    Ok(RevisionList {
+        items: revision_summaries(conn, id, None)?,
+    })
+}
+
+/// One Revision's file manifest. NotFound for no such Artifact or Revision.
+pub fn manifest(conn: &Connection, id: &str, revision: i64) -> Result<RevisionManifest, Error> {
+    let summary = revision_summaries(conn, id, Some(revision))?
+        .pop()
+        .ok_or_else(|| Error::NotFound(format!("no revision {id}@{revision}")))?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT path, media_type, size, sha256 FROM revision_files
+             WHERE artifact_id = ?1 AND revision = ?2 ORDER BY path",
+        )
+        .map_err(db_err)?;
+    let files = stmt
+        .query_map(params![id, revision], |r| {
+            Ok(FileEntry {
+                path: r.get(0)?,
+                media_type: r.get(1)?,
+                size: r.get(2)?,
+                sha256: r.get(3)?,
+            })
+        })
+        .map_err(db_err)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(db_err)?;
+    Ok(RevisionManifest {
+        artifact: id.to_string(),
+        revision: summary,
+        files,
+    })
 }
 
 /// Artifacts, newest activity first.
@@ -665,6 +812,7 @@ pub fn list(conn: &Connection, f: &ListFilter) -> Result<Vec<ListRow>, Error> {
            AND (?3 IS NULL OR EXISTS (SELECT 1 FROM revisions r
                  WHERE r.artifact_id = a.id AND r.number = (SELECT MAX(number) FROM revisions WHERE artifact_id = a.id) AND r.author = ?3))
            AND (?4 IS NULL OR a.updated_at < strftime('%Y-%m-%dT%H:%M:%fZ','now', ?4))
+           AND (?11 IS NULL OR a.id = ?11)
            AND (?6 = 0 OR EXISTS (SELECT 1 FROM comments c
                  WHERE c.artifact_id = a.id AND c.parent_id IS NULL AND c.status = 'open'))
            AND {scope}
@@ -687,7 +835,8 @@ pub fn list(conn: &Connection, f: &ListFilter) -> Result<Vec<ListRow>, Error> {
                 sn,
                 sr,
                 sa,
-                sw
+                sw,
+                f.id
             ],
             |r| {
                 Ok(ListRow {

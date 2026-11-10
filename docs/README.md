@@ -22,6 +22,7 @@ Terms (Artifact, Kind, Revision, Comment, Agent, Reviewer and the rest) are defi
 5. [Serve untrusted content from a separate origin](adr/0005-serve-untrusted-content-from-a-separate-origin.md)
 6. [Server-rendered web UI with htmx and maud](adr/0006-server-rendered-web-ui-with-htmx-and-maud.md)
 7. [Immediate write transactions and an optional base check](adr/0007-immediate-write-transactions-and-optional-base-check.md)
+8. [Generate the OpenAPI document from Rust types with utoipa](adr/0008-generate-openapi-from-rust-types-with-utoipa.md)
 
 ## Where the decisions came from
 

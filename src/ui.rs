@@ -286,6 +286,7 @@ fn list_view(
     kind: Option<Kind>,
 ) -> Result<ListView, Error> {
     let filter = |kind, scope| ListFilter {
+        id: None,
         kind,
         session: None,
         author: None,

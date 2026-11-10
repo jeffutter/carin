@@ -26,7 +26,7 @@ pub struct Locator {
     pub section: Option<String>,
 }
 
-#[derive(Debug, Serialize, PartialEq, Eq)]
+#[derive(Debug, Serialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct StoredLocator {
     pub line_start: Option<i64>,
     pub line_end: Option<i64>,
@@ -34,7 +34,7 @@ pub struct StoredLocator {
     pub section_path: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct Reply {
     pub id: i64,
     pub author: String,
@@ -44,7 +44,7 @@ pub struct Reply {
     pub created_at: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct Thread {
     pub id: i64,
     pub artifact_id: String,
@@ -81,7 +81,7 @@ pub struct ThreadResult {
     pub highest_comment_id: i64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct CommentList {
     pub threads: Vec<Thread>,
     pub highest_comment_id: i64,

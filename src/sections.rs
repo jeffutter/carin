@@ -96,7 +96,7 @@ fn split_query(query: &str) -> Vec<Vec<(char, bool)>> {
     segs
 }
 
-#[derive(Debug, Serialize, PartialEq, Eq)]
+#[derive(Debug, Serialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct OutlineEntry {
     pub path: String,
     pub level: u8,
@@ -193,15 +193,23 @@ pub fn parse(src: &str) -> Vec<Heading> {
     out
 }
 
-pub fn outline(src: &str) -> Vec<OutlineEntry> {
-    parse(src)
-        .iter()
-        .map(|h| OutlineEntry {
-            path: h.display_path(),
-            level: h.level,
-            bytes: h.end - h.start,
-        })
-        .collect()
+pub fn outline(src: &str) -> Outline {
+    Outline {
+        sections: parse(src)
+            .iter()
+            .map(|h| OutlineEntry {
+                path: h.display_path(),
+                level: h.level,
+                bytes: h.end - h.start,
+            })
+            .collect(),
+    }
+}
+
+/// What `outline` prints on the CLI and `GET /api/v1/artifacts/{id}/outline` returns.
+#[derive(Debug, Serialize, PartialEq, Eq, utoipa::ToSchema)]
+pub struct Outline {
+    pub sections: Vec<OutlineEntry>,
 }
 
 /// Find the one heading a query names. Never guesses.
@@ -355,7 +363,7 @@ mod tests {
     const DOC: &str = "# Title\n\nintro\n\n## A\n\na body\n\n### A1\n\ndeep\n\n## B\n\nb body\n";
 
     fn paths(src: &str) -> Vec<String> {
-        outline(src).into_iter().map(|e| e.path).collect()
+        outline(src).sections.into_iter().map(|e| e.path).collect()
     }
 
     // CRLF decision: pulldown-cmark offsets are byte offsets into the
@@ -444,7 +452,7 @@ mod tests {
 
     #[test]
     fn outline_has_paths_levels_and_sizes() {
-        let o = outline(DOC);
+        let o = outline(DOC).sections;
         assert_eq!(
             paths(DOC),
             ["Title", "Title > A", "Title > A > A1", "Title > B"]
@@ -528,7 +536,7 @@ mod tests {
 
     #[test]
     fn no_headings() {
-        assert!(outline("just text\n").is_empty());
+        assert!(outline("just text\n").sections.is_empty());
     }
 
     #[test]

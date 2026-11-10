@@ -1,3 +1,4 @@
+pub mod api;
 pub mod artifact;
 pub mod bundle;
 pub mod cli;
@@ -245,6 +246,7 @@ pub fn run(command: Command, ctx: &Context) -> Result<u8, Error> {
                 (explicit, false) => (explicit.clone(), None),
             };
             let filter = artifact::ListFilter {
+                id: None,
                 kind,
                 session,
                 author,
@@ -264,7 +266,10 @@ pub fn run(command: Command, ctx: &Context) -> Result<u8, Error> {
             if text {
                 print!("{}", list_table(&rows));
             } else {
-                println!("{}", serde_json::json!({ "artifacts": rows }));
+                println!(
+                    "{}",
+                    serde_json::json!(artifact::ArtifactList { items: rows })
+                );
             }
             Ok(0)
         }
@@ -291,10 +296,7 @@ pub fn run(command: Command, ctx: &Context) -> Result<u8, Error> {
             let (id, rev) = artifact::parse_target(&target)?;
             let conn = db::open(&ctx.db_path)?;
             let text = artifact::markdown_text(&conn, &id, rev)?;
-            println!(
-                "{}",
-                serde_json::json!({ "sections": sections::outline(&text) })
-            );
+            println!("{}", serde_json::json!(sections::outline(&text)));
             Ok(0)
         }
         Command::Get {

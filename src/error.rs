@@ -69,6 +69,17 @@ impl Error {
         }
     }
 
+    /// HTTP status of the API's problem+json response (docs/api.md "Errors").
+    pub fn http_status(&self) -> u16 {
+        match self {
+            Error::Usage(_) => 400,
+            Error::NotFound(_) => 404,
+            Error::Rejected(_) => 422,
+            Error::Conflict(_) => 409,
+            Error::Unexpected(_) => 500,
+        }
+    }
+
     /// The JSON line printed on stderr: `{"code":..., "message":...}`.
     pub fn to_json(&self) -> String {
         let body = JsonError {
@@ -86,15 +97,16 @@ mod tests {
     #[test]
     fn variants_map_to_documented_codes() {
         let cases = [
-            (Error::Unexpected("x".into()), "unexpected", 1),
-            (Error::Usage("x".into()), "usage", 2),
-            (Error::NotFound("x".into()), "not_found", 3),
-            (Error::Rejected("x".into()), "rejected_input", 4),
-            (Error::Conflict("x".into()), "conflict", 6),
+            (Error::Unexpected("x".into()), "unexpected", 1, 500),
+            (Error::Usage("x".into()), "usage", 2, 400),
+            (Error::NotFound("x".into()), "not_found", 3, 404),
+            (Error::Rejected("x".into()), "rejected_input", 4, 422),
+            (Error::Conflict("x".into()), "conflict", 6, 409),
         ];
-        for (err, code, exit) in cases {
+        for (err, code, exit, status) in cases {
             assert_eq!(err.code(), code);
             assert_eq!(err.exit_code(), exit);
+            assert_eq!(err.http_status(), status);
             assert!(EXIT_CODES.iter().any(|(c, _)| *c == exit));
         }
     }

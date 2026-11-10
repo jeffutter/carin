@@ -31,7 +31,7 @@ An optional per-Artifact "last seen" marker in sqlite can mark Artifacts with a 
 
 Everything an Agent supplies is untrusted. The model is in [ADR 0005](adr/0005-serve-untrusted-content-from-a-separate-origin.md); the rules:
 
-- Two listeners, one process: the UI port, and an untrusted-content port (`--content-port`, default UI port + 1). They are different origins. The UI never serves Artifact bytes.
+- Two listeners, one process: the UI port, and an untrusted-content port (`--content-port`, default UI port + 1). They are different origins. The UI never renders Artifact bytes; its only byte route is the JSON API's raw-file download, which is always `Content-Disposition: attachment` with `nosniff` ([api.md](api.md#reads-and-lists)).
 - `cairn serve` prints one JSON line on stdout once both ports are bound: `{"ui":"http://127.0.0.1:P","content":"http://127.0.0.1:Q","reviewer":"..."}`.
 - Untrusted bytes live at `/a/<id>/<rev>/<path>` on the content port, always pinned to a Revision.
 - **html**: shown in `<iframe src=...>` with `sandbox="allow-scripts"` and never `allow-same-origin`. CSP: `sandbox allow-scripts; default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'none'; frame-ancestors <ui origin>`. A Bundle is self-contained: no remote images, scripts, fonts or `fetch`.

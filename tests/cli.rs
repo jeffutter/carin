@@ -467,7 +467,7 @@ mod roundtrip {
             .output()
             .unwrap();
         assert_eq!(
-            json(&o.stdout)["artifacts"].as_array().map(|a| a.len()),
+            json(&o.stdout)["items"].as_array().map(|a| a.len()),
             Some(0)
         );
     }
@@ -590,7 +590,7 @@ mod list_delete {
             "{}",
             String::from_utf8_lossy(&o.stderr)
         );
-        json(&o.stdout)["artifacts"].as_array().unwrap().clone()
+        json(&o.stdout)["items"].as_array().unwrap().clone()
     }
 
     fn ids(rows: &[serde_json::Value]) -> Vec<String> {
@@ -658,7 +658,7 @@ mod list_delete {
             .output()
             .unwrap();
         assert_eq!(
-            ids(json(&o.stdout)["artifacts"].as_array().unwrap()),
+            ids(json(&o.stdout)["items"].as_array().unwrap()),
             vec![a.clone()]
         );
         // --mine with a session
@@ -666,26 +666,20 @@ mod list_delete {
             .args(["--session", "s2", "list", "--mine"])
             .output()
             .unwrap();
-        assert_eq!(
-            ids(json(&o.stdout)["artifacts"].as_array().unwrap()),
-            vec![b]
-        );
+        assert_eq!(ids(json(&o.stdout)["items"].as_array().unwrap()), vec![b]);
         // --mine without a session falls back to the author
         let o = base(&db)
             .args(["--author", "bot", "list", "--mine"])
             .output()
             .unwrap();
-        assert_eq!(
-            ids(json(&o.stdout)["artifacts"].as_array().unwrap()),
-            vec![a]
-        );
+        assert_eq!(ids(json(&o.stdout)["items"].as_array().unwrap()), vec![a]);
         // the fallback env session does not filter by itself
         let o = base(&db)
             .env("CLAUDE_CODE_SESSION_ID", "zzz")
             .arg("list")
             .output()
             .unwrap();
-        assert_eq!(json(&o.stdout)["artifacts"].as_array().unwrap().len(), 2);
+        assert_eq!(json(&o.stdout)["items"].as_array().unwrap().len(), 2);
         // --open needs a Thread; none exist here
         assert_eq!(list(&db, &["--open"]).len(), 0);
     }
@@ -711,7 +705,7 @@ mod list_delete {
         assert_eq!(o.status.code(), Some(0));
         let ids_for = |args: &[&str]| {
             let o = base(&db).args(args).output().unwrap();
-            ids(json(&o.stdout)["artifacts"].as_array().unwrap())
+            ids(json(&o.stdout)["items"].as_array().unwrap())
         };
         assert_eq!(
             ids_for(&["--session", "s2", "list", "--mine"]),
@@ -1452,11 +1446,11 @@ mod comments {
             ],
         );
         let rows = ok(&db, &["list"]);
-        assert_eq!(rows["artifacts"][0]["open_threads"], 2);
+        assert_eq!(rows["items"][0]["open_threads"], 2);
         ok(&db, &["comment", "resolve", &t1["id"].to_string()]);
-        assert_eq!(ok(&db, &["list"])["artifacts"][0]["open_threads"], 1);
+        assert_eq!(ok(&db, &["list"])["items"][0]["open_threads"], 1);
         assert_eq!(
-            ok(&db, &["list", "--open"])["artifacts"]
+            ok(&db, &["list", "--open"])["items"]
                 .as_array()
                 .unwrap()
                 .len(),
@@ -1464,7 +1458,7 @@ mod comments {
         );
         ok(&db, &["comment", "resolve", "2"]);
         assert_eq!(
-            ok(&db, &["list", "--open"])["artifacts"]
+            ok(&db, &["list", "--open"])["items"]
                 .as_array()
                 .unwrap()
                 .len(),
@@ -1845,7 +1839,7 @@ mod scoping {
     }
 
     fn names(v: &serde_json::Value) -> Vec<String> {
-        let mut n: Vec<String> = v["artifacts"]
+        let mut n: Vec<String> = v["items"]
             .as_array()
             .unwrap()
             .iter()
@@ -1873,7 +1867,7 @@ mod scoping {
         submit(&db, &wt, "in-wt", &[]);
 
         let v = ok(&db, &root, &["list", "--all-worktrees"]);
-        let rows = v["artifacts"].as_array().unwrap();
+        let rows = v["items"].as_array().unwrap();
         let find = |n: &str| {
             rows.iter()
                 .find(|r| r["name"] == format!("{n}.md"))
@@ -2010,7 +2004,7 @@ mod scoping {
         );
         assert_eq!(o.status.code(), Some(0));
         let v = ok(&db, &t, &["list", "--project", "none", "--all-worktrees"]);
-        let row = &v["artifacts"][0];
+        let row = &v["items"][0];
         assert_eq!(row["project"], "elsewhere");
         assert_eq!(row["project_root"], target.to_str().unwrap());
         // Reading that root back finds it, from anywhere.
@@ -2028,7 +2022,7 @@ mod scoping {
             assert_eq!(o.status.code(), Some(0));
         }
         let v = ok(&db, &t, &["list", "--all-worktrees"]);
-        let nulls = v["artifacts"]
+        let nulls = v["items"]
             .as_array()
             .unwrap()
             .iter()
@@ -2047,7 +2041,7 @@ mod scoping {
         // No repo: succeeds, no scope.
         submit(&db, &plain, "plain", &[]);
         let v = ok(&db, &plain, &["list"]);
-        assert!(v["artifacts"][0]["project"].is_null());
+        assert!(v["items"][0]["project"].is_null());
 
         // git missing from PATH.
         let empty = t.join("emptybin");
@@ -2080,7 +2074,7 @@ mod scoping {
         let id = submit(&db, &bare, "inbare", &[]);
         let v = ok(&db, &bare, &["list"]);
         assert!(
-            v["artifacts"]
+            v["items"]
                 .as_array()
                 .unwrap()
                 .iter()
@@ -2097,7 +2091,7 @@ mod scoping {
         let sub = sup.join("lib");
         submit(&db, &sub, "insub", &[]);
         let v = ok(&db, &sub, &["list"]);
-        let row = &v["artifacts"][0];
+        let row = &v["items"][0];
         assert_eq!(row["name"], "insub.md");
         assert_eq!(row["project"], "lib");
         assert_eq!(row["project_root"], sub.to_str().unwrap());
@@ -2619,7 +2613,7 @@ mod diagrams {
         assert_eq!(g.stdout, FLOW.as_bytes());
         let l = run(&db, &["list"]);
         let v: serde_json::Value = serde_json::from_slice(&l.stdout).unwrap();
-        assert_eq!(v["artifacts"][0]["kind"], "diagram");
+        assert_eq!(v["items"][0]["kind"], "diagram");
     }
 
     #[test]
@@ -2635,7 +2629,7 @@ mod diagrams {
         assert!(v["message"].as_str().unwrap().starts_with("mermaid: "));
         let l = run(&db, &["list"]);
         let v: serde_json::Value = serde_json::from_slice(&l.stdout).unwrap();
-        assert!(v["artifacts"].as_array().unwrap().is_empty());
+        assert!(v["items"].as_array().unwrap().is_empty());
     }
 
     #[test]

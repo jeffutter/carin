@@ -204,6 +204,15 @@ impl ScopeFilter {
         }
     }
 
+    /// Narrow to one Worktree: the Artifacts of the Project root plus those of
+    /// `path`, the same rule the CLI applies from inside a Worktree. `path`
+    /// must be absolute; there is no cwd to resolve it against.
+    pub fn in_worktree(mut self, path: &str) -> Self {
+        self.any_worktree = false;
+        self.worktree = Some(normalize_root(path, Path::new("/")));
+        self
+    }
+
     /// SQL conditions on the artifacts table aliased `alias`, using numbered
     /// parameters `?base` to `?base+3`; bind them with [`Self::params`].
     pub fn sql(&self, alias: &str, base: usize) -> String {

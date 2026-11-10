@@ -234,11 +234,15 @@ pub(crate) fn ui_router(
     ui_port: u16,
 ) -> Router {
     let csp = ui::csp(content_port);
+    let db_path_api = db_path.clone();
     ui::router(ui::UiState {
         db_path,
         reviewer: reviewer.to_string(),
         content_port,
     })
+    // Before the fallback and the layers, so the API inherits the Host check
+    // and the hardening.
+    .merge(crate::api::router(db_path_api))
     .fallback(|| async { not_found() })
     .layer(map_response(move |res: Response| {
         let csp = csp.clone();
