@@ -293,7 +293,10 @@ pub fn extract<'a>(src: &'a str, query: &str) -> Result<&'a str, Error> {
 }
 
 /// Replace one Section with `replacement`, which must begin with a heading
-/// line. Text outside the Section is untouched.
+/// line of the same level as the replaced one, and contain no heading
+/// shallower than it. The result must also keep the headings after the
+/// Section unchanged, which rejects an unclosed code fence swallowing the
+/// tail. Text outside the Section is untouched.
 pub fn splice(src: &str, query: &str, replacement: &str) -> Result<String, Error> {
     let hs = parse(src);
     let h = resolve(&hs, query)?;
@@ -301,6 +304,16 @@ pub fn splice(src: &str, query: &str, replacement: &str) -> Result<String, Error
         return Err(Error::Rejected(
             "a section replacement must start with a heading line".into(),
         ));
+    }
+    let new_hs = parse(replacement);
+    if let Some(bad) = new_hs
+        .iter()
+        .find(|r| r.level != h.level && (r.start == 0 || r.level < h.level))
+    {
+        return Err(Error::Rejected(format!(
+            "a section replacement must start with a level-{} heading and contain none shallower; found level {}",
+            h.level, bad.level
+        )));
     }
     let old = &src[h.start..h.end];
     let crlf = old
@@ -315,7 +328,20 @@ pub fn splice(src: &str, query: &str, replacement: &str) -> Result<String, Error
     if !tail.is_empty() && !new.ends_with('\n') {
         new.push_str(if crlf { "\r\n" } else { "\n" });
     }
-    Ok(format!("{}{new}{tail}", &src[..h.start]))
+    let out = format!("{}{new}{tail}", &src[..h.start]);
+    let split = h.start + new.len();
+    let got: Vec<(u8, String)> = parse(&out)
+        .into_iter()
+        .filter(|x| x.start >= split)
+        .map(|x| (x.level, x.text))
+        .collect();
+    let want: Vec<(u8, String)> = parse(tail).into_iter().map(|x| (x.level, x.text)).collect();
+    if got != want {
+        return Err(Error::Rejected(
+            "the replacement changes the structure of the rest of the document (for example an unclosed code fence)".into(),
+        ));
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -344,6 +370,23 @@ mod tests {
             assert!(h.end == crlf.len() || crlf[h.end..].starts_with('#'));
         }
         assert_eq!(extract(&crlf, "A1").unwrap(), "### A1\r\n\r\ndeep\r\n\r\n");
+    }
+
+    #[test]
+    fn splice_rejects_level_change_and_shallower_heading() {
+        assert!(splice(DOC, "A", "### A\nx\n").is_err());
+        assert!(splice(DOC, "A", "# A\nx\n").is_err());
+        assert!(splice(DOC, "A", "## A\nx\n# Up\ny\n").is_err());
+        assert!(splice(DOC, "A", "## A\nx\n").is_ok());
+        assert!(splice(DOC, "A", "## A\nx\n#### deep\ny\n").is_ok());
+    }
+
+    #[test]
+    fn splice_rejects_unclosed_fence_but_allows_balanced() {
+        assert!(splice(DOC, "A", "## A\n```\ncode\n").is_err());
+        let crlf = DOC.replace('\n', "\r\n");
+        assert!(splice(&crlf, "A", "## A\n```\ncode\n").is_err());
+        assert!(splice(DOC, "A", "## A\n```\n## x\n```\n").is_ok());
     }
 
     #[test]
