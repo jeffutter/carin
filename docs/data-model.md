@@ -59,6 +59,7 @@ A Section is named by a path of heading texts, for example `Design > Storage > L
 - Replace: the replacement text includes the heading line and must start with a heading line of the same level and contain no shallower heading. Renaming or re-levelling is an ordinary edit. Extra headings inside the replacement become subsections. A section edit splices into the latest Revision and stores a new full Revision; it fails if the path no longer matches.
 - Line endings: Section ranges are byte offsets into the stored text and CRLF documents parse like LF ones (covered by a test). A splice never rewrites existing bytes. The replacement is inserted verbatim, except that when the replaced Section uses CRLF its bare LF are converted to CRLF, so a Revision never mixes endings. A missing final newline on a replacement that is followed by more text is added in the document's style.
 - Read: a section read may target a given Revision (`abc123@3`).
+- `cairn embeds` and `GET /artifacts/{id}/embeds` list a Revision's embeds by parsing its stored text and resolving each target at call time (an unpinned reference follows the target's current latest Revision); they do not read the `embeds` table. Non-markdown exits 4 as with `outline`.
 - Outline: lists every heading with its path and size, no ids. Size is the byte length of the Section, children included. `--section` and `outline` on a non-markdown Artifact, or on markdown that is not valid UTF-8, exit 4.
 
 ## Revisions

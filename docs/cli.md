@@ -7,9 +7,9 @@ cairn submit <path|dir|->      cairn comment add <id>[@rev] <body|->
 cairn get <id>[@rev]           cairn comment list [<id>]
 cairn edit <id> <path|->       cairn comment resolve <thread-id>
 cairn outline <id>[@rev]       cairn comment reopen <thread-id>
-cairn list                     cairn serve
-cairn delete <id>... --yes     cairn skill
-cairn view <id>[@rev]
+cairn embeds <id>[@rev]        cairn serve
+cairn list                     cairn skill
+cairn delete <id>... --yes     cairn view <id>[@rev]
 ```
 
 ## Global flags
@@ -50,6 +50,7 @@ Text forms:
 | `list` | the table described under [list](#list) |
 | `delete` | `deleted <id> <id>...` |
 | `outline` | one line per heading, indented by level: full path, then `(N bytes)` |
+| `embeds` | one line per embed: `L<line> cairn:<id>[@N] <kind>[/<format>]`, then `-> @<rev>` (unpinned) or `dangling` |
 | `get --out` | `path  media_type  N bytes` per file |
 | `comment add` | `#12 abc123@2` (`#13 reply in #12 abc123@2` for a reply, `(stale, latest is @3)` appended when stale), then `highest_comment_id N` |
 | `comment resolve`, `reopen` | `#12 abc123@2 resolved` (or `open`) |
@@ -89,6 +90,10 @@ One Rust table (an enum with descriptions) drives the CLI error handling and the
 ### get and outline
 
 `get <id>[@rev]` prints markdown or diagram source. `image` and `html` need `--out <dir>` (exit 2 without it), write each file at its relative path and print `{"files": [{"path", "media_type", "size"}]}`; A `diagram` with `--out <dir>` writes the rendered SVG as `diagram.svg` (mermaid rendered as for `--render`, an svg diagram as stored; the stored source is never written) and prints the same file list; `--out` is rejected for markdown (exit 2). Existing regular files in `--out` are overwritten; symlinks below `--out` and file/directory clashes are refused (exit 1) before anything is written. `--section` is markdown only. `get --render` prints a diagram as SVG without a server: a mermaid diagram is rendered with the same renderer the content origin uses (a render failure exits 4, as at submit), an svg diagram is printed as stored. It exits 2 for other Kinds and conflicts with `--out` and `--section`. `outline <id>[@rev]` prints `{"sections": [{"path": "A > B", "level": 2, "bytes": 120}]}`, one entry per heading in document order; `bytes` is the Section's size including children. A path that is not unique as a suffix carries `#n` (`Notes#2`) so it can be passed straight to `--section`. In a path, `\`, `>` and a `#` before trailing digits are backslash-escaped (`Issue \#12`, `A \> B`) so every printed path resolves to its own Section. `edit <id> --section "A > B" <path|->` replaces that Section; the new text must start with a heading line of the same level, contain no shallower heading, and not change the structure of the rest of the document (e.g. an unclosed code fence). `--base` works with it.
+
+### embeds
+
+`embeds <id>[@rev]` prints `{"embeds": [...]}`, one entry per `![alt](cairn:ID[@N])` image reference of a markdown Revision, in document order, so a client does not have to parse markdown. Each entry has `ordinal`, `line` (1-based line of the reference in the stored text), `alt`, `target_id`, `pinned`, `target_revision`, `kind`, `format` (null unless the target is a diagram) and `dangling`. `target_revision` is the pinned N, or for an unpinned reference the target's current latest Revision resolved when the command runs (the rule the web UI uses, see [web-ui.md](web-ui.md)); it can differ from what the `embeds` table recorded at submit. `dangling` is true when the target Artifact or pinned Revision no longer exists, and then `target_revision`, `kind` and `format` are null. Only image syntax counts: references in code spans or fences are not reported. Non-markdown Artifacts exit 4, as with `outline`.
 
 ### list
 

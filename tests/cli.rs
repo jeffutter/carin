@@ -3172,6 +3172,11 @@ mod output_format {
 
         let t = both_ways(&db, &["outline", &id]);
         assert!(t.contains("A > B") && t.contains("bytes"), "{t}");
+        let t = both_ways(&db, &["embeds", &id]);
+        assert!(
+            !is_json(&t) || t.trim().is_empty() || t.contains("embeds"),
+            "{t}"
+        );
         let t = both_ways(&db, &["list"]);
         assert!(t.starts_with("ID"), "{t}");
 

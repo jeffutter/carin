@@ -9,7 +9,7 @@
 //! carried forward if its target has since gone, so it cannot block later
 //! edits; new references are always validated. Only image syntax counts; other URL schemes are ignored.
 
-use pulldown_cmark::{Event, Options, Parser, Tag};
+use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::Serialize;
 
@@ -25,6 +25,10 @@ pub struct Ref {
     pub target_id: String,
     /// `Some(n)` when the reference is pinned with `@n`.
     pub pinned: Option<i64>,
+    /// The image's alt text (plain text of its label).
+    pub alt: String,
+    /// 1-based line of the reference in the source text.
+    pub line: usize,
 }
 
 /// One recorded embed of a Revision.
@@ -42,16 +46,51 @@ pub struct Embed {
 /// a regex) so code spans, fences and reference-style images behave.
 pub fn extract(text: &str) -> Result<Vec<Ref>, Error> {
     let mut out = Vec::new();
-    for ev in Parser::new_ext(text, Options::all()) {
-        if let Event::Start(Tag::Image { dest_url, .. }) = ev
-            && let Some(rest) = dest_url.strip_prefix(SCHEME)
-        {
-            // Malformed content is rejected input, not a usage error.
-            let (target_id, pinned) = parse_target(rest)
-                .map_err(|e| Error::Rejected(format!("embed {dest_url}: {}", e)))?;
-            out.push(Ref { target_id, pinned });
+    // Alt text accumulates between an image's Start and End events. Images can
+    // nest inside labels, so each open image has its own buffer.
+    let mut open: Vec<Option<Ref>> = Vec::new();
+    let mut alts: Vec<String> = Vec::new();
+    for (ev, range) in Parser::new_ext(text, Options::all()).into_offset_iter() {
+        match ev {
+            Event::Start(Tag::Image { dest_url, .. }) => {
+                let mut found = None;
+                if let Some(rest) = dest_url.strip_prefix(SCHEME) {
+                    // Malformed content is rejected input, not a usage error.
+                    let (target_id, pinned) = parse_target(rest)
+                        .map_err(|e| Error::Rejected(format!("embed {dest_url}: {}", e)))?;
+                    let line = 1 + text[..range.start].bytes().filter(|&b| b == b'\n').count();
+                    found = Some(Ref {
+                        target_id,
+                        pinned,
+                        alt: String::new(),
+                        line,
+                    });
+                }
+                open.push(found);
+                alts.push(String::new());
+            }
+            Event::Text(t) | Event::Code(t) => {
+                if let Some(a) = alts.last_mut() {
+                    a.push_str(&t);
+                }
+            }
+            Event::SoftBreak | Event::HardBreak => {
+                if let Some(a) = alts.last_mut() {
+                    a.push(' ');
+                }
+            }
+            Event::End(TagEnd::Image) => {
+                let alt = alts.pop().unwrap_or_default();
+                if let Some(mut r) = open.pop().flatten() {
+                    r.alt = alt;
+                    out.push(r);
+                }
+            }
+            _ => {}
         }
     }
+    // Nested images finish inner-first; document order is by start.
+    out.sort_by_key(|r| r.line);
     Ok(out)
 }
 
@@ -147,6 +186,84 @@ pub fn record(
     Ok(())
 }
 
+/// One `cairn:` image reference of a markdown Revision, resolved at call time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+pub struct ResolvedEmbed {
+    pub ordinal: i64,
+    /// 1-based line of the reference in the stored markdown.
+    pub line: usize,
+    pub alt: String,
+    pub target_id: String,
+    /// Whether the reference named its Revision (`id@N`) rather than latest.
+    pub pinned: bool,
+    /// The pinned N, or the target's current latest Revision for an unpinned
+    /// reference (the rule the web UI uses). Null when dangling.
+    pub target_revision: Option<i64>,
+    /// The target's Kind; null when dangling.
+    pub kind: Option<String>,
+    /// The target's diagram format; null unless it is a diagram.
+    pub format: Option<String>,
+    /// The target Artifact or pinned Revision no longer exists.
+    pub dangling: bool,
+}
+
+/// The `cairn:` image references of markdown `text`, resolved against the
+/// database now. Unlike [`for_revision`] this reads the text, so it reports
+/// alt and line, and an unpinned reference follows the target's latest.
+pub fn resolve(conn: &Connection, text: &str) -> Result<Vec<ResolvedEmbed>, Error> {
+    let mut out = Vec::new();
+    for (ordinal, r) in extract(text)?.into_iter().enumerate() {
+        let target: Option<(String, Option<String>)> = conn
+            .query_row(
+                "SELECT kind, format FROM artifacts WHERE id = ?1",
+                [&r.target_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(db_err)?;
+        let revision: Option<i64> = match (&target, r.pinned) {
+            (None, _) => None,
+            (Some(_), Some(n)) => conn
+                .query_row(
+                    "SELECT number FROM revisions WHERE artifact_id = ?1 AND number = ?2",
+                    params![r.target_id, n],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(db_err)?,
+            (Some(_), None) => conn
+                .query_row(
+                    "SELECT MAX(number) FROM revisions WHERE artifact_id = ?1",
+                    [&r.target_id],
+                    |row| row.get(0),
+                )
+                .map_err(db_err)?,
+        };
+        let (kind, format) = match (&target, revision) {
+            (Some((k, f)), Some(_)) => (Some(k.clone()), f.clone()),
+            _ => (None, None),
+        };
+        out.push(ResolvedEmbed {
+            ordinal: ordinal as i64,
+            line: r.line,
+            alt: r.alt,
+            target_id: r.target_id,
+            pinned: r.pinned.is_some(),
+            target_revision: revision,
+            kind,
+            format,
+            dangling: revision.is_none(),
+        });
+    }
+    Ok(out)
+}
+
+/// What `embeds` prints on the CLI and `GET /api/v1/artifacts/{id}/embeds` returns.
+#[derive(Debug, Serialize, PartialEq, Eq, utoipa::ToSchema)]
+pub struct EmbedList {
+    pub embeds: Vec<ResolvedEmbed>,
+}
+
 /// The embeds recorded for a Revision, in document order. Does not join on
 /// `artifacts`, so embeds of deleted targets still list.
 pub fn for_revision(conn: &Connection, id: &str, revision: i64) -> Result<Vec<Embed>, Error> {
@@ -177,13 +294,38 @@ mod tests {
         Ref {
             target_id: id.into(),
             pinned: p,
+            alt: String::new(),
+            line: 0,
         }
+    }
+
+    /// Compare ignoring alt and line, which have their own test.
+    fn bare(t: &str) -> Vec<Ref> {
+        extract(t)
+            .unwrap()
+            .into_iter()
+            .map(|mut x| {
+                x.alt.clear();
+                x.line = 0;
+                x
+            })
+            .collect()
+    }
+
+    #[test]
+    fn alt_and_line() {
+        let t =
+            "# T\n\nsee ![a *b*](cairn:abc) and\n![](cairn:def@2)\n\n```\n![x](cairn:zzz)\n```\n";
+        let got = extract(t).unwrap();
+        assert_eq!(got.len(), 2);
+        assert_eq!((got[0].alt.as_str(), got[0].line), ("a b", 3));
+        assert_eq!((got[1].alt.as_str(), got[1].line), ("", 4));
     }
 
     #[test]
     fn latest_and_pinned() {
         let t = "![a](cairn:abc)\n\ntext ![b](cairn:def@2)";
-        assert_eq!(extract(t).unwrap(), vec![r("abc", None), r("def", Some(2))]);
+        assert_eq!(bare(t), vec![r("abc", None), r("def", Some(2))]);
     }
 
     #[test]
@@ -191,13 +333,13 @@ mod tests {
         let t = "`![a](cairn:abc)`\n\n```\n![a](cairn:abc)\n```\n\n\
                  ![h](http://x/y.png) ![d](data:image/png;base64,AA) ![r](rel.png)\n\n\
                  [link](cairn:abc)";
-        assert_eq!(extract(t).unwrap(), vec![]);
+        assert_eq!(bare(t), vec![]);
     }
 
     #[test]
     fn reference_style() {
         let t = "![a][x]\n\n[x]: cairn:abc@3";
-        assert_eq!(extract(t).unwrap(), vec![r("abc", Some(3))]);
+        assert_eq!(bare(t), vec![r("abc", Some(3))]);
     }
 
     #[test]

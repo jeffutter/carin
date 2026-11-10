@@ -142,6 +142,11 @@ pub enum Command {
         /// `abc123` or `abc123@2`; defaults to the latest Revision
         target: String,
     },
+    /// List a markdown Artifact's `cairn:` image embeds, resolved now, with line and alt text
+    Embeds {
+        /// `abc123` or `abc123@2`; defaults to the latest Revision
+        target: String,
+    },
     /// List Artifacts, newest activity first
     List {
         /// Only this Kind

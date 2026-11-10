@@ -59,7 +59,7 @@ Every dependency comes from nix. Hand-written CSS and the pinned htmx are embedd
 ## Suggested build order
 
 1. Core: schema, connection setup, Artifact and Revision operations, limits, error enum.
-2. CLI for markdown: `submit`, `get`, `edit`, `outline`, `list`, `delete`, then the `comment` group and `--wait`.
+2. CLI for markdown: `submit`, `get`, `edit`, `outline`, `embeds`, `list`, `delete`, then the `comment` group and `--wait`.
 3. Other Kinds: html Bundles, images, svg and Mermaid diagrams (engine spike code is in `.wayfinder/assets/mermaid-engine-spike/`), markdown embeds.
 4. Scoping: git detection and the `--project` family of flags.
 5. `serve`: the content port first (`.wayfinder/assets/web-safety-spike/`), then the UI (`.wayfinder/assets/web-ui-prototype/index.html` is the look to match), then `/api/v1` and the OpenAPI snapshot.

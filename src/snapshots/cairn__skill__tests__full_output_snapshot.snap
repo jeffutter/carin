@@ -6,7 +6,7 @@ expression: generate()
 name: cairn
 description: Submit documents, diagrams, images and html pages to cairn for human review, and read and answer the reviewer's Comments. Use when you want a human to review or comment on something you produced.
 cairn_version: 0.1.0
-hash: d9fc62e6c6a0d133bfdc337e00e239ed77f7fc6a1843b87da43d8da1d62d090b
+hash: 72d2e5f2c2c9d604881e5a47b3dda00a522099da9800d963627b3119467ca6b7
 ---
 
 # cairn
@@ -177,6 +177,16 @@ List a markdown Artifact's headings with their paths and sizes
 
 ```
 cairn outline <TARGET>
+```
+
+- `<TARGET>`: `abc123` or `abc123@2`; defaults to the latest Revision
+
+#### `cairn embeds`
+
+List a markdown Artifact's `cairn:` image embeds, resolved now, with line and alt text
+
+```
+cairn embeds <TARGET>
 ```
 
 - `<TARGET>`: `abc123` or `abc123@2`; defaults to the latest Revision

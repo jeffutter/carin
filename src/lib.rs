@@ -301,6 +301,18 @@ pub fn run(command: Command, ctx: &Context, fmt: Format) -> Result<u8, Error> {
             emit(fmt, &sections::outline(&text));
             Ok(0)
         }
+        Command::Embeds { target } => {
+            let (id, rev) = artifact::parse_target(&target)?;
+            let conn = db::open(&ctx.db_path)?;
+            let text = artifact::markdown_text(&conn, &id, rev)?;
+            emit(
+                fmt,
+                &embeds::EmbedList {
+                    embeds: embeds::resolve(&conn, &text)?,
+                },
+            );
+            Ok(0)
+        }
         Command::Get {
             target,
             section,

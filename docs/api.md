@@ -17,6 +17,7 @@ All under `/api/v1`, separate from the web routes (`/a/<id>`). Ids in paths are 
 | `GET /artifacts/{id}/revisions`, `GET /artifacts/{id}/revisions/{n}` | Revision list; one Revision as a JSON file manifest (path, media type, size, sha256) |
 | `GET /artifacts/{id}/revisions/{n}/files/{path}` | Raw bytes with the stored media type; `?section=` for a markdown Section |
 | `GET /artifacts/{id}/outline` | Headings, paths, sizes; `?revision=` for a past Revision |
+| `GET /artifacts/{id}/embeds` | A markdown Revision's `cairn:` embeds resolved now (as `cairn embeds`); `?revision=` for a past Revision |
 | `GET /openapi.json` | The OpenAPI 3.1 document |
 | `GET /artifacts/{id}/comments`, `POST /artifacts/{id}/comments` | List (with `since` and `wait`); add or reply |
 | `POST /threads/{id}/resolve`, `POST /threads/{id}/reopen` | Thread state |

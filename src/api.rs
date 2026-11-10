@@ -512,6 +512,31 @@ async fn get_outline(
     Ok(json(&outline))
 }
 
+/// The `cairn:` image embeds of a markdown Artifact, resolved now.
+#[utoipa::path(
+    get, path = "/api/v1/artifacts/{id}/embeds",
+    params(("id" = String, Path, description = "Bare Artifact id"), OutlineParams),
+    responses((status = 200, description = "Embeds", body = crate::embeds::EmbedList), ProblemResponses)
+)]
+async fn get_embeds(
+    State(s): State<ApiState>,
+    P(id): P<String>,
+    Q(q): Q<OutlineParams>,
+) -> Result<Response, ApiError> {
+    let id = bare_id(&id)?.to_string();
+    if let Some(n) = q.revision {
+        revision_number(&n.to_string())?;
+    }
+    let list = run(&s, move |c| {
+        let text = artifact::markdown_text(c, &id, q.revision)?;
+        Ok(crate::embeds::EmbedList {
+            embeds: crate::embeds::resolve(c, &text)?,
+        })
+    })
+    .await?;
+    Ok(json(&list))
+}
+
 #[derive(Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
 struct CommentParams {
@@ -1081,6 +1106,7 @@ async fn same_origin_writes(req: Request, next: Next) -> Response {
         get_revision,
         get_file,
         get_outline,
+        get_embeds,
         list_comments,
         create_artifact,
         edit_artifact,
@@ -1147,6 +1173,7 @@ pub(crate) fn router(db_path: PathBuf) -> Router {
             read_only(get_file),
         )
         .route("/api/v1/artifacts/{id}/outline", read_only(get_outline))
+        .route("/api/v1/artifacts/{id}/embeds", read_only(get_embeds))
         .route(
             "/api/v1/artifacts/{id}/comments",
             get(list_comments).post(add_comment),
@@ -1622,6 +1649,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn embeds_match_the_cli_resolver() {
+        let f = Fixture::new();
+        let img = f.submit("pic", Kind::Image, &[("p.png", b"\x89PNG")], None);
+        let md = format!("# T\n\n![alt](cairn:{img})\n");
+        let id = f.submit("plan", Kind::Markdown, &[("a.md", md.as_bytes())], None);
+        let v = f.json(&format!("/api/v1/artifacts/{id}/embeds")).await;
+        assert_eq!(v["embeds"][0]["line"], 3);
+        assert_eq!(v["embeds"][0]["alt"], "alt");
+        assert_eq!(v["embeds"][0]["target_revision"], 1);
+        assert_eq!(v["embeds"][0]["dangling"], false);
+        f.problem(
+            &format!("/api/v1/artifacts/{img}/embeds"),
+            422,
+            "rejected_input",
+        )
+        .await;
+        f.problem(
+            &format!("/api/v1/artifacts/{id}/embeds?revision=0"),
+            400,
+            "usage",
+        )
+        .await;
+    }
+
+    #[tokio::test]
     async fn comments_list() {
         let f = Fixture::new();
         let id = f.submit("plan", Kind::Markdown, &[("a.md", MD.as_bytes())], None);
@@ -1779,6 +1831,7 @@ mod tests {
             "/api/v1/artifacts/{id}/revisions/{n}",
             "/api/v1/artifacts/{id}/revisions/{n}/files/{path}",
             "/api/v1/artifacts/{id}/outline",
+            "/api/v1/artifacts/{id}/embeds",
             "/api/v1/artifacts/{id}/comments",
         ] {
             assert!(v["paths"][p]["get"].is_object(), "{p}");

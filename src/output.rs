@@ -9,6 +9,7 @@ use serde::Serialize;
 
 use crate::artifact::{ListRow, Ref};
 use crate::comments::{Added, CommentList, ThreadResult};
+use crate::embeds::EmbedList;
 use crate::error::Error;
 use crate::sections::Outline;
 
@@ -160,6 +161,35 @@ impl Render for Outline {
         for e in &self.sections {
             let indent = "  ".repeat(usize::from(e.level.saturating_sub(1)));
             out.push_str(&format!("{indent}{}  ({} bytes)\n", e.path, e.bytes));
+        }
+        out
+    }
+}
+
+impl Render for EmbedList {
+    /// One line per embed: `L<line> cairn:<id>[@N] <kind>[/<format>]`, then
+    /// `-> @<rev>` for an unpinned reference or `dangling`.
+    fn text(&self) -> String {
+        let mut out = String::new();
+        for e in &self.embeds {
+            out.push_str(&format!("L{} cairn:{}", e.line, e.target_id));
+            if e.pinned
+                && let Some(n) = e.target_revision
+            {
+                out.push_str(&format!("@{n}"));
+            }
+            if let Some(k) = &e.kind {
+                out.push_str(&format!(" {k}"));
+                if let Some(f) = &e.format {
+                    out.push_str(&format!("/{f}"));
+                }
+            }
+            match (e.pinned, e.target_revision) {
+                (_, None) => out.push_str(" dangling"),
+                (false, Some(n)) => out.push_str(&format!(" -> @{n}")),
+                (true, Some(_)) => {}
+            }
+            out.push('\n');
         }
         out
     }

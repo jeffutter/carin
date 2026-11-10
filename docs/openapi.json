@@ -727,6 +727,96 @@
         }
       }
     },
+    "/api/v1/artifacts/{id}/embeds": {
+      "get": {
+        "tags": [],
+        "summary": "The `cairn:` image embeds of a markdown Artifact, resolved now.",
+        "operationId": "get_embeds",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Bare Artifact id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "revision",
+            "in": "query",
+            "description": "Revision number; latest by default.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Embeds",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmbedList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed query string, path segment or id.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such Artifact, Revision or file.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An `edit` against a stale Revision (`base_revision` is not the latest);\nthe detail names the latest Revision and its author. No read returns it.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Well-formed but refused: a limit out of range, an ambiguous or missing\nSection, a Kind without Sections.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Anything else, including a database busy past its timeout.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/artifacts/{id}/outline": {
       "get": {
         "tags": [],
@@ -1463,6 +1553,21 @@
           }
         }
       },
+      "EmbedList": {
+        "type": "object",
+        "description": "What `embeds` prints on the CLI and `GET /api/v1/artifacts/{id}/embeds` returns.",
+        "required": [
+          "embeds"
+        ],
+        "properties": {
+          "embeds": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ResolvedEmbed"
+            }
+          }
+        }
+      },
       "FileEntry": {
         "type": "object",
         "description": "One stored file of a Revision, without its bytes.",
@@ -1687,6 +1792,65 @@
               "string",
               "null"
             ]
+          }
+        }
+      },
+      "ResolvedEmbed": {
+        "type": "object",
+        "description": "One `cairn:` image reference of a markdown Revision, resolved at call time.",
+        "required": [
+          "ordinal",
+          "line",
+          "alt",
+          "target_id",
+          "pinned",
+          "dangling"
+        ],
+        "properties": {
+          "alt": {
+            "type": "string"
+          },
+          "dangling": {
+            "type": "boolean",
+            "description": "The target Artifact or pinned Revision no longer exists."
+          },
+          "format": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The target's diagram format; null unless it is a diagram."
+          },
+          "kind": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The target's Kind; null when dangling."
+          },
+          "line": {
+            "type": "integer",
+            "description": "1-based line of the reference in the stored markdown.",
+            "minimum": 0
+          },
+          "ordinal": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "pinned": {
+            "type": "boolean",
+            "description": "Whether the reference named its Revision (`id@N`) rather than latest."
+          },
+          "target_id": {
+            "type": "string"
+          },
+          "target_revision": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The pinned N, or the target's current latest Revision for an unpinned\nreference (the rule the web UI uses). Null when dangling."
           }
         }
       },
