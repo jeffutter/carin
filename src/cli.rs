@@ -2,10 +2,11 @@
 
 use std::path::PathBuf;
 
-use clap::{Parser, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::config::resolve_db_path_from_env;
 use crate::error::Error;
+use crate::kind::Kind;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum Role {
@@ -50,6 +51,29 @@ pub struct Cli {
     /// Project root path or name (default: detected from the cwd)
     #[arg(long, global = true, env = "CAIRN_PROJECT")]
     pub project: Option<String>,
+
+    #[command(subcommand)]
+    pub command: Command,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum Command {
+    /// Store a new Artifact and print its ref
+    Submit {
+        /// File to submit, or `-` for stdin
+        path: String,
+        /// Artifact Kind (inferred from the extension; required for stdin)
+        #[arg(long, value_enum)]
+        kind: Option<Kind>,
+        /// Artifact name (default: the file name; required for stdin)
+        #[arg(long)]
+        name: Option<String>,
+        /// Diagram format
+        #[arg(long)]
+        format: Option<String>,
+    },
+    /// Print an Artifact's content: `abc123` or `abc123@2`
+    Get { target: String },
 }
 
 /// Global flags after env fallbacks and defaults.
@@ -69,17 +93,18 @@ fn non_empty(v: Option<String>) -> Option<String> {
 impl Cli {
     /// Resolve defaults and fallbacks. `fallback_session` is the value of
     /// `CLAUDE_CODE_SESSION_ID`, passed in so tests need not touch the env.
-    pub fn resolve(self, fallback_session: Option<String>) -> Context {
+    pub fn resolve(self, fallback_session: Option<String>) -> (Context, Command) {
         let author = non_empty(self.author).unwrap_or_else(|| self.role.as_str().to_string());
         let session = non_empty(self.session).or(non_empty(fallback_session));
-        Context {
+        let ctx = Context {
             role: self.role,
             author,
             session,
             db_path: resolve_db_path_from_env(self.db.as_deref()),
             // An empty value is meaningful ("disable detection"), so keep it.
             project: self.project,
-        }
+        };
+        (ctx, self.command)
     }
 }
 
@@ -104,21 +129,28 @@ mod tests {
     use super::*;
 
     fn cli(args: &[&str]) -> Cli {
-        Cli::try_parse_from(std::iter::once("cairn").chain(args.iter().copied())).unwrap()
+        Cli::try_parse_from(
+            std::iter::once("cairn")
+                .chain(args.iter().copied())
+                .chain(["get", "x"]),
+        )
+        .unwrap()
     }
 
     #[test]
     fn defaults() {
         let c = cli(&["--db", "/d.db"]);
         // CAIRN_* env vars are not set by the test harness for role/author.
-        let ctx = c.resolve(None);
+        let ctx = c.resolve(None).0;
         assert_eq!(ctx.author, ctx.role.as_str());
         assert_eq!(ctx.db_path, PathBuf::from("/d.db"));
     }
 
     #[test]
     fn reviewer_role_names_default_author() {
-        let ctx = cli(&["--role", "reviewer", "--db", "/d.db"]).resolve(None);
+        let ctx = cli(&["--role", "reviewer", "--db", "/d.db"])
+            .resolve(None)
+            .0;
         assert_eq!(ctx.role, Role::Reviewer);
         assert_eq!(ctx.author, "reviewer");
     }
@@ -135,7 +167,8 @@ mod tests {
             "--db",
             "/d",
         ])
-        .resolve(Some("fallback".into()));
+        .resolve(Some("fallback".into()))
+        .0;
         assert_eq!(ctx.author, "bot");
         assert_eq!(ctx.session.as_deref(), Some("s1"));
         assert_eq!(ctx.project.as_deref(), Some("p"));
@@ -143,7 +176,7 @@ mod tests {
 
     #[test]
     fn session_falls_back() {
-        let ctx = cli(&["--db", "/d"]).resolve(Some("fallback".into()));
+        let ctx = cli(&["--db", "/d"]).resolve(Some("fallback".into())).0;
         if std::env::var_os("CAIRN_SESSION").is_none() {
             assert_eq!(ctx.session.as_deref(), Some("fallback"));
         }
@@ -151,7 +184,7 @@ mod tests {
 
     #[test]
     fn bad_role_is_usage_error() {
-        let err = parse(["cairn", "--role", "boss"]).unwrap_err();
+        let err = parse(["cairn", "--role", "boss", "get", "x"]).unwrap_err();
         assert_eq!(err.exit_code(), 2);
         assert_eq!(err.code(), "usage");
     }
