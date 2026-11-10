@@ -171,28 +171,75 @@ pub fn edit(
     base: Option<i64>,
     addresses: &[i64],
 ) -> Result<Ref, Error> {
-    append_revision(conn, ctx, id, base, addresses, |kind, latest| {
-        let kind = Kind::parse(kind)?;
-        let mut input = input;
-        let mut single_path = String::new();
-        if kind != Kind::Html {
-            single_path = latest.single_path()?;
-            if kind == Kind::Image && input.files.len() == 1 && input.files[0].path == "-" {
-                input.files[0].path = single_path.clone();
-            }
+    // The Mermaid render can take up to the render time limit, so it runs
+    // before the write lock is taken (as submit does) and only the inputs it
+    // depended on are re-checked inside the transaction. Kind and format are
+    // fixed at creation; the single file path of a non-Html Artifact can
+    // change, which is the one real race.
+    let plan = EditPlan::read(conn, id)?;
+    let mut input = input;
+    if plan.kind == Kind::Image && input.files.len() == 1 && input.files[0].path == "-" {
+        input.files[0].path = plan.single_path.clone();
+    }
+    let files = bundle::prepare(plan.kind, plan.format, input, &plan.single_path)?;
+    append_revision(conn, ctx, id, base, addresses, |_, latest| {
+        if EditPlan::read(latest.tx, id)? != plan {
+            return Err(Error::Conflict(
+                "the Artifact changed while the edit was being prepared; retry".into(),
+            ));
         }
-        // The stored format is fixed at creation, so an edit is re-checked
-        // against it. A Mermaid render here runs inside the write
-        // transaction and can hold the database lock up to the render time
-        // limit; that is accepted so the format and the latest Revision are
-        // read under the same lock as the insert.
+        Ok(files)
+    })
+}
+
+/// What `edit` reads from the Artifact to prepare a new Revision.
+#[derive(Debug, PartialEq, Eq)]
+struct EditPlan {
+    kind: Kind,
+    format: Option<Format>,
+    /// The latest Revision's only file path; empty for Html bundles.
+    single_path: String,
+}
+
+impl EditPlan {
+    fn read(conn: &Connection, id: &str) -> Result<Self, Error> {
+        let kind: String = conn
+            .query_row("SELECT kind FROM artifacts WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })
+            .optional()
+            .map_err(db_err)?
+            .ok_or_else(|| Error::NotFound(format!("no artifact {id}")))?;
+        let kind = Kind::parse(&kind)?;
         let format = if kind == Kind::Diagram {
-            Some(diagram_format(latest.tx, latest.id)?)
+            Some(diagram_format(conn, id)?)
         } else {
             None
         };
-        bundle::prepare(kind, format, input, &single_path)
-    })
+        let single_path = if kind == Kind::Html {
+            String::new()
+        } else {
+            let revision: i64 = conn
+                .query_row(
+                    "SELECT MAX(number) FROM revisions WHERE artifact_id = ?1",
+                    [id],
+                    |r| r.get::<_, Option<i64>>(0),
+                )
+                .map_err(db_err)?
+                .ok_or_else(|| Error::NotFound(format!("artifact {id} has no revisions")))?;
+            Latest {
+                tx: conn,
+                id,
+                revision,
+            }
+            .single_path()?
+        };
+        Ok(EditPlan {
+            kind,
+            format,
+            single_path,
+        })
+    }
 }
 
 /// Replace one Section of the latest markdown Revision. The splice runs
@@ -279,7 +326,7 @@ pub fn markdown_text(conn: &Connection, id: &str, revision: Option<i64>) -> Resu
 /// The latest Revision's files, read lazily so a Bundle edit that does not
 /// need them never loads their bytes.
 struct Latest<'a> {
-    tx: &'a rusqlite::Transaction<'a>,
+    tx: &'a Connection,
     id: &'a str,
     revision: i64,
 }
@@ -676,6 +723,84 @@ mod tests {
         for bad in ["", "d", "30", "-3d", "3x", "1.5h", "3 d", "99999999999999d"] {
             assert_eq!(parse_duration(bad).unwrap_err().exit_code(), 2, "{bad}");
         }
+    }
+
+    fn test_ctx(dir: &std::path::Path) -> Context {
+        Context {
+            role: crate::cli::Role::Agent,
+            author: "t".into(),
+            session: None,
+            session_explicit: None,
+            db_path: dir.join("db"),
+            project: None,
+        }
+    }
+
+    fn raw(path: &str, body: &str) -> Input {
+        Input {
+            files: vec![RawFile {
+                path: path.into(),
+                bytes: body.as_bytes().to_vec(),
+            }],
+            dir: false,
+        }
+    }
+
+    #[test]
+    fn invalid_edit_is_rejected_without_taking_the_write_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = test_ctx(dir.path());
+        let mut conn = crate::db::open(&ctx.db_path).unwrap();
+        let r = submit(
+            &mut conn,
+            &ctx,
+            SubmitInput {
+                name: "d.svg".into(),
+                kind: Kind::Diagram,
+                format: Some(Format::Svg),
+                input: raw("d.svg", "<svg xmlns=\"http://www.w3.org/2000/svg\"/>"),
+                scope: None,
+            },
+        )
+        .unwrap();
+        // Another connection holds the write lock; a rejected edit must come
+        // back as Rejected, not as a busy error from waiting on that lock.
+        let mut other = crate::db::open(&ctx.db_path).unwrap();
+        let held = other
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .unwrap();
+        let start = std::time::Instant::now();
+        let err = edit(&mut conn, &ctx, &r.id, raw("d.svg", "not svg"), None, &[]).unwrap_err();
+        assert!(matches!(err, Error::Rejected(_)), "{err:?}");
+        assert!(start.elapsed() < std::time::Duration::from_secs(1));
+        drop(held);
+    }
+
+    #[test]
+    fn edit_plan_changes_when_the_single_path_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = test_ctx(dir.path());
+        let mut conn = crate::db::open(&ctx.db_path).unwrap();
+        let r = submit(
+            &mut conn,
+            &ctx,
+            SubmitInput {
+                name: "a.md".into(),
+                kind: Kind::Markdown,
+                format: None,
+                input: raw("a.md", "# hi\n"),
+                scope: None,
+            },
+        )
+        .unwrap();
+        let before = EditPlan::read(&conn, &r.id).unwrap();
+        assert_eq!(before.single_path, "a.md");
+        conn.execute(
+            "UPDATE revision_files SET path = 'b.md' WHERE artifact_id = ?1",
+            [&r.id],
+        )
+        .unwrap();
+        assert_ne!(EditPlan::read(&conn, &r.id).unwrap(), before);
     }
 
     #[test]
