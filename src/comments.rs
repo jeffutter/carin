@@ -62,7 +62,7 @@ pub struct Thread {
     pub replies: Vec<Reply>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct Added {
     pub id: i64,
     /// The root Comment's id: the Comment's own id for a root.
@@ -75,7 +75,7 @@ pub struct Added {
     pub highest_comment_id: i64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ThreadResult {
     pub thread: Thread,
     pub highest_comment_id: i64,

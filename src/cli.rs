@@ -169,7 +169,7 @@ pub enum Command {
 }
 
 /// `a-b` or a single line `a`, 1-based and inclusive.
-fn parse_lines(s: &str) -> Result<(i64, i64), String> {
+pub(crate) fn parse_lines(s: &str) -> Result<(i64, i64), String> {
     let bad = || format!("bad line range {s:?}: use a-b or a single line number");
     let num = |t: &str| t.parse::<i64>().ok().filter(|n| *n >= 1).ok_or_else(bad);
     match s.split_once('-') {

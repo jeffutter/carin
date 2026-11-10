@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Cairn API",
-    "description": "Read routes of the Cairn JSON API. Loopback only, no auth, no CORS.",
+    "description": "The Cairn JSON API. Loopback only, no auth, no CORS; a write carrying a foreign Origin is refused.",
     "version": "0.1.0"
   },
   "paths": {
@@ -127,7 +127,94 @@
             }
           },
           "409": {
-            "description": "Reserved for writes (`edit` against a stale Revision); no read returns it.",
+            "description": "An `edit` against a stale Revision (`base_revision` is not the latest);\nthe detail names the latest Revision and its author. No read returns it.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Well-formed but refused: a limit out of range, an ambiguous or missing\nSection, a Kind without Sections.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Anything else, including a database busy past its timeout.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [],
+        "summary": "Create an Artifact (Revision 1).",
+        "operationId": "create_artifact",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/UploadForm"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefBody"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed query string, path segment or id.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request carries an `Origin` header naming another host (a browser\npage on another site). Code `forbidden`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such Artifact, Revision or file.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An `edit` against a stale Revision (`base_revision` is not the latest);\nthe detail names the latest Revision and its author. No read returns it.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -207,7 +294,202 @@
             }
           },
           "409": {
-            "description": "Reserved for writes (`edit` against a stale Revision); no read returns it.",
+            "description": "An `edit` against a stale Revision (`base_revision` is not the latest);\nthe detail names the latest Revision and its author. No read returns it.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Well-formed but refused: a limit out of range, an ambiguous or missing\nSection, a Kind without Sections.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Anything else, including a database busy past its timeout.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [],
+        "summary": "Replace an Artifact's content with a new Revision, or one Section of it.",
+        "operationId": "edit_artifact",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Bare Artifact id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "section",
+            "in": "query",
+            "description": "Replace only this markdown Section (`A > B`, optional `#n`) with the\none markdown file part, which must start with its heading.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/UploadForm"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The new Revision",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefBody"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed query string, path segment or id.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request carries an `Origin` header naming another host (a browser\npage on another site). Code `forbidden`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such Artifact, Revision or file.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An `edit` against a stale Revision (`base_revision` is not the latest);\nthe detail names the latest Revision and its author. No read returns it.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Well-formed but refused: a limit out of range, an ambiguous or missing\nSection, a Kind without Sections.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Anything else, including a database busy past its timeout.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [],
+        "summary": "Permanently delete an Artifact with its Revisions, Comments and embeds.",
+        "operationId": "delete_artifact",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Bare Artifact id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Deleted"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed query string, path segment or id.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request carries an `Origin` header naming another host (a browser\npage on another site). Code `forbidden`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such Artifact, Revision or file.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An `edit` against a stale Revision (`base_revision` is not the latest);\nthe detail names the latest Revision and its author. No read returns it.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -242,7 +524,7 @@
     "/api/v1/artifacts/{id}/comments": {
       "get": {
         "tags": [],
-        "summary": "Threads of an Artifact, with their replies.",
+        "summary": "Threads of an Artifact, with their replies. With `wait`, holds the request\nuntil a Comment newer than the cursor appears or the wait ends; a timeout\nis a 200 with no Threads and the same `highest_comment_id`.",
         "operationId": "list_comments",
         "parameters": [
           {
@@ -271,6 +553,15 @@
             "schema": {
               "type": "integer",
               "format": "int64"
+            }
+          },
+          {
+            "name": "wait",
+            "in": "query",
+            "description": "Long poll: seconds to wait for a Comment newer than `since` (or, with\nno `since`, newer than the highest id when the request arrived).\n`true` or an empty value waits 60; a number is clamped to 300; absent,\n`false` or `0` answers at once.",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           }
         ],
@@ -306,7 +597,105 @@
             }
           },
           "409": {
-            "description": "Reserved for writes (`edit` against a stale Revision); no read returns it.",
+            "description": "An `edit` against a stale Revision (`base_revision` is not the latest);\nthe detail names the latest Revision and its author. No read returns it.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Well-formed but refused: a limit out of range, an ambiguous or missing\nSection, a Kind without Sections.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Anything else, including a database busy past its timeout.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [],
+        "summary": "Add a root Comment (new Thread) or, with `reply`, a reply.",
+        "operationId": "add_comment",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Bare Artifact id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddComment"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Added",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Added"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed query string, path segment or id.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request carries an `Origin` header naming another host (a browser\npage on another site). Code `forbidden`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such Artifact, Revision or file.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An `edit` against a stale Revision (`base_revision` is not the latest);\nthe detail names the latest Revision and its author. No read returns it.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -396,7 +785,7 @@
             }
           },
           "409": {
-            "description": "Reserved for writes (`edit` against a stale Revision); no read returns it.",
+            "description": "An `edit` against a stale Revision (`base_revision` is not the latest);\nthe detail names the latest Revision and its author. No read returns it.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -476,7 +865,7 @@
             }
           },
           "409": {
-            "description": "Reserved for writes (`edit` against a stale Revision); no read returns it.",
+            "description": "An `edit` against a stale Revision (`base_revision` is not the latest);\nthe detail names the latest Revision and its author. No read returns it.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -566,7 +955,7 @@
             }
           },
           "409": {
-            "description": "Reserved for writes (`edit` against a stale Revision); no read returns it.",
+            "description": "An `edit` against a stale Revision (`base_revision` is not the latest);\nthe detail names the latest Revision and its author. No read returns it.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -674,7 +1063,189 @@
             }
           },
           "409": {
-            "description": "Reserved for writes (`edit` against a stale Revision); no read returns it.",
+            "description": "An `edit` against a stale Revision (`base_revision` is not the latest);\nthe detail names the latest Revision and its author. No read returns it.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Well-formed but refused: a limit out of range, an ambiguous or missing\nSection, a Kind without Sections.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Anything else, including a database busy past its timeout.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/threads/{id}/reopen": {
+      "post": {
+        "tags": [],
+        "summary": "Mark a Thread open again. Idempotent.",
+        "operationId": "reopen_thread",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Root Comment id of the Thread",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The Thread",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed query string, path segment or id.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request carries an `Origin` header naming another host (a browser\npage on another site). Code `forbidden`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such Artifact, Revision or file.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An `edit` against a stale Revision (`base_revision` is not the latest);\nthe detail names the latest Revision and its author. No read returns it.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Well-formed but refused: a limit out of range, an ambiguous or missing\nSection, a Kind without Sections.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Anything else, including a database busy past its timeout.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/threads/{id}/resolve": {
+      "post": {
+        "tags": [],
+        "summary": "Mark a Thread resolved. Idempotent.",
+        "operationId": "resolve_thread",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Root Comment id of the Thread",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The Thread",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed query string, path segment or id.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request carries an `Origin` header naming another host (a browser\npage on another site). Code `forbidden`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such Artifact, Revision or file.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An `edit` against a stale Revision (`base_revision` is not the latest);\nthe detail names the latest Revision and its author. No read returns it.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -709,6 +1280,121 @@
   },
   "components": {
     "schemas": {
+      "AddComment": {
+        "type": "object",
+        "description": "Body of `POST /api/v1/artifacts/{id}/comments`.",
+        "required": [
+          "body"
+        ],
+        "properties": {
+          "author": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Defaults to the role name."
+          },
+          "body": {
+            "type": "string",
+            "description": "The Comment text, at most 64 KiB."
+          },
+          "lines": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Anchor to a line range of a text Artifact: `a-b` or `a`."
+          },
+          "reply": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Root Comment id of the Thread to reply in; takes no `lines`/`section`."
+          },
+          "revision": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Comment on this Revision instead of the latest."
+          },
+          "role": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`agent` (default) or `reviewer`."
+          },
+          "section": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Anchor to a markdown Section (`A > B`)."
+          },
+          "session": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "Added": {
+        "type": "object",
+        "required": [
+          "id",
+          "thread_id",
+          "artifact_id",
+          "revision",
+          "latest_revision",
+          "stale",
+          "highest_comment_id"
+        ],
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "highest_comment_id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "latest_revision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "locator": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/StoredLocator"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "stale": {
+            "type": "boolean"
+          },
+          "thread_id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The root Comment's id: the Comment's own id for a root."
+          }
+        }
+      },
       "ArtifactDetail": {
         "allOf": [
           {
@@ -765,6 +1451,21 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/Thread"
+            }
+          }
+        }
+      },
+      "Deleted": {
+        "type": "object",
+        "description": "Body of a successful delete.",
+        "required": [
+          "deleted"
+        ],
+        "properties": {
+          "deleted": {
+            "type": "array",
+            "items": {
+              "type": "string"
             }
           }
         }
@@ -932,6 +1633,28 @@
         "type": "string",
         "format": "binary",
         "description": "Schema stand-in for a raw file body."
+      },
+      "RefBody": {
+        "type": "object",
+        "description": "Body of a successful create or edit.",
+        "required": [
+          "id",
+          "revision",
+          "ref"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "ref": {
+            "type": "string",
+            "description": "`id@revision`."
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
       },
       "Reply": {
         "type": "object",
@@ -1136,6 +1859,128 @@
             "type": "string"
           }
         }
+      },
+      "ThreadResult": {
+        "type": "object",
+        "required": [
+          "thread",
+          "highest_comment_id"
+        ],
+        "properties": {
+          "highest_comment_id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "thread": {
+            "$ref": "#/components/schemas/Thread"
+          }
+        }
+      },
+      "UploadForm": {
+        "type": "object",
+        "description": "Schema of the multipart body of create and edit.",
+        "required": [
+          "meta",
+          "files"
+        ],
+        "properties": {
+          "files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RawBytes"
+            },
+            "description": "Every other part is a file; its part name is its stored path.\nA single-file Artifact takes one; an html Bundle takes one or more."
+          },
+          "meta": {
+            "$ref": "#/components/schemas/WriteMeta",
+            "description": "Optional on edit, required on create."
+          }
+        }
+      },
+      "WriteMeta": {
+        "type": "object",
+        "description": "The `meta` part of a create or edit. Unknown fields are a 400.",
+        "properties": {
+          "addresses": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "description": "Edit only: root Comment ids of Threads this Revision addresses."
+          },
+          "author": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Defaults to the role name."
+          },
+          "base_revision": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Edit only: refuse with 409 unless this is still the latest Revision."
+          },
+          "format": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Create only, required for a diagram and refused otherwise: `mermaid` or `svg`."
+          },
+          "kind": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Create only, required: `markdown`, `html`, `image` or `diagram`."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Create only: display name, and the stored path of a single-file\nArtifact. Defaults to the file part's name when there is one file part."
+          },
+          "project_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Create only: Project name; needs `project_root`."
+          },
+          "project_root": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Create only: absolute path of the Project's main checkout."
+          },
+          "role": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`agent` (default) or `reviewer`."
+          },
+          "session": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "worktree": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Create only: absolute path of a linked Worktree."
+          }
+        },
+        "additionalProperties": false
       }
     }
   }

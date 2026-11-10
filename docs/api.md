@@ -29,7 +29,23 @@ Both roles may call everything.
 
 ## Writes
 
-`multipart/form-data`: a JSON `meta` part (`kind`, `format`, `name`, `role`, `author`, `session`, `addresses`, `base_revision`, and on create `project_name`, `project_root`, `worktree`) plus one part per file. A Section edit is a `PUT` with `?section=` and one markdown part. The limits and embed validation of [data-model.md](data-model.md) apply.
+Create (`POST /artifacts`, 201) and edit (`PUT /artifacts/{id}`, 200) take `multipart/form-data`: a JSON `meta` part plus one part per file. The part name is the file's stored path, so a file cannot be named `meta`. Both return `{ "id", "revision", "ref" }`.
+
+| `meta` field | Applies to | Meaning |
+| --- | --- | --- |
+| `kind` | create, required | `markdown`, `html`, `image` or `diagram`; any other value is a 422 |
+| `format` | create | `mermaid` or `svg`; required for a diagram, refused otherwise |
+| `name` | create | Display name and stored path of a single-file Artifact; defaults to the file part's name, required with several files |
+| `project_root`, `project_name`, `worktree` | create | Scope as the CLI stores it: `project_root` and `worktree` are absolute paths; `project_name` alone is a 400 |
+| `base_revision` | edit | Refuse with a 409 unless this is still the latest Revision; the detail names the latest Revision and its author |
+| `addresses` | edit | Root Comment ids the new Revision answers |
+| `role`, `author`, `session` | both | Attribution: `agent` (default) or `reviewer`; author defaults to the role name; no session unless given |
+
+`meta` is optional on edit and refused fields are a 400, as are unknown fields. One file part replaces a single-file Artifact (its stored path is kept); several parts replace an html Bundle whole. A Section edit is a `PUT` with `?section=` and exactly one markdown file part. `DELETE /artifacts/{id}` answers `{ "deleted": [id] }`.
+
+Comments are JSON: `POST /artifacts/{id}/comments` takes `{ body, lines?, section?, reply?, revision?, role?, author?, session? }` (`lines` is `a-b` or `a`, as the CLI's `--lines`) and returns the CLI's `comment add` JSON with a 201. `POST /threads/{id}/resolve` and `/reopen` take no body, are idempotent and return the CLI's Thread JSON. The limits and embed validation of [data-model.md](data-model.md) apply to every write, with the same stable error codes: an over-limit file, bad Kind or bad embed is a 422.
+
+A write carrying an `Origin` header other than the request's own `Host` is a 403 with code `forbidden`: a web page on another site can send a simple cross-site POST to a loopback listener, and browsers always attach `Origin` to it. curl and agents send no `Origin` and are unaffected.
 
 ## Reads and lists
 
@@ -40,7 +56,7 @@ Both roles may call everything.
 
 ## Long poll
 
-`GET /artifacts/{id}/comments?since=<id>&wait=<secs>` returns when there are Comments past the cursor or the wait ends (default 60, capped). A timeout is a plain 200 with an empty list and the same `highest_comment_id`. The server polls the database every 500 ms. No SSE or websocket in v1.
+`GET /artifacts/{id}/comments?since=<id>&wait=<secs>` returns when there are Comments past the cursor or the wait ends. `wait` is seconds, clamped to 300; `wait=true` (or empty) waits 60 and absent, `false` or `0` answers at once. Without `since` the cursor is the highest Comment id when the request arrived. A timeout is a plain 200 with an empty list and the same `highest_comment_id`. The server polls the database every 500 ms. No SSE or websocket in v1.
 
 ## Errors
 
@@ -52,6 +68,7 @@ RFC 9457 `application/problem+json` with a stable `code` shared with the CLI's J
 | 3 not found | 404 |
 | 4 rejected input | 422 |
 | 6 conflict | 409 |
+| (none) cross-origin write | 403 `forbidden` |
 | 1 unexpected | 500 |
 
 A malformed query string or path segment is a 400, an unknown `/api/v1` path a 404 and a wrong method a 405, all problem+json. Exit 5 has no error: a wait timeout is a 200.
