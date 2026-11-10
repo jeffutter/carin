@@ -9,4 +9,6 @@ An html Artifact is shown in an `<iframe src=...>` with `sandbox="allow-scripts"
 
 The UI renders markdown with raw HTML dropped, escapes comment text, author names and titles, strips `javascript:` and `data:` links, opens links with `rel="noopener noreferrer"`, and sets its own strict CSP with `frame-ancestors 'self'`.
 
+Both listeners refuse any request whose `Host` is not exactly `127.0.0.1:<port>`, `localhost:<port>` or `[::1]:<port>` for that listener's own port (403, before routing). This defeats DNS rebinding, where a hostile name re-resolved to loopback would otherwise pass the UI's same-origin `Origin == Host` check.
+
 We chose this over serving everything from one origin (a script in a Bundle could then act as the UI) and over `srcdoc` (relative asset paths would not resolve to Bundle files). The CSP `sandbox` header goes on every response, not just iframed ones, because a spike showed a script inside an SVG opened directly ran when the header allowed scripts; only html needs `allow-scripts`. The cost is a second port to configure and a Bundle that cannot use a CDN. Spike code is in `.wayfinder/assets/web-safety-spike/`.

@@ -17,9 +17,10 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
 use axum::Router;
+use axum::extract::Request;
 use axum::extract::{Path as UrlPath, State};
 use axum::http::{HeaderName, HeaderValue, StatusCode, header};
-use axum::middleware::map_response;
+use axum::middleware::{Next, from_fn, map_response};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use tokio::sync::oneshot;
@@ -135,8 +136,13 @@ pub fn serve(db_path: &Path, ui_port: u16, content_port: u16, reviewer: &str) ->
     db::open(db_path)?;
     let ui_listener = bind_loopback(ui_port)?;
     let content_listener = bind_loopback(content_port)?;
-    let ui = ui_router(db_path.to_path_buf(), reviewer, content_port);
-    let content = content_router(db_path.to_path_buf(), ui_port, Renderer::start());
+    let ui = ui_router(db_path.to_path_buf(), reviewer, content_port, ui_port);
+    let content = content_router(
+        db_path.to_path_buf(),
+        ui_port,
+        content_port,
+        Renderer::start(),
+    );
     println!(
         "{}",
         serde_json::json!({
@@ -189,7 +195,44 @@ use crate::ui::not_found;
 
 // --- UI port ----------------------------------------------------------------
 
-pub(crate) fn ui_router(db_path: PathBuf, reviewer: &str, content_port: u16) -> Router {
+/// True when `host` is exactly a loopback name for this listener's own port.
+/// Exact match only: a rebound attacker name (`evil.example:port`) or a
+/// lookalike (`localhost.evil.example:port`) never passes.
+fn host_allowed(host: &str, port: u16) -> bool {
+    let host = host.to_ascii_lowercase();
+    [
+        format!("127.0.0.1:{port}"),
+        format!("localhost:{port}"),
+        format!("[::1]:{port}"),
+    ]
+    .contains(&host)
+}
+
+/// Outermost layer on both listeners. Defeats DNS rebinding: a page on
+/// `evil.example` re-resolved to 127.0.0.1 still sends `Host: evil.example`,
+/// so it is refused before routing, reads included. Missing Host is refused.
+async fn require_loopback_host(port: u16, req: Request, next: Next) -> Response {
+    let ok = req
+        .headers()
+        .get(header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .is_some_and(|h| host_allowed(h, port));
+    if ok {
+        next.run(req).await
+    } else {
+        harden(
+            (StatusCode::FORBIDDEN, "forbidden").into_response(),
+            HeaderValue::from_static(SCRIPTLESS_CSP),
+        )
+    }
+}
+
+pub(crate) fn ui_router(
+    db_path: PathBuf,
+    reviewer: &str,
+    content_port: u16,
+    ui_port: u16,
+) -> Router {
     let csp = ui::csp(content_port);
     ui::router(ui::UiState {
         db_path,
@@ -200,15 +243,26 @@ pub(crate) fn ui_router(db_path: PathBuf, reviewer: &str, content_port: u16) -> 
         let csp = csp.clone();
         async move { harden(res, csp) }
     }))
+    .layer(from_fn(move |req, next| {
+        require_loopback_host(ui_port, req, next)
+    }))
 }
 
 // --- content port -------------------------------------------------------------
 
-pub(crate) fn content_router(db_path: PathBuf, ui_port: u16, renderer: Renderer) -> Router {
+pub(crate) fn content_router(
+    db_path: PathBuf,
+    ui_port: u16,
+    content_port: u16,
+    renderer: Renderer,
+) -> Router {
     Router::new()
         .route("/a/{id}/{rev}/{*path}", get(content))
         .fallback(|| async { not_found() })
         .layer(map_response(harden_content))
+        .layer(from_fn(move |req, next| {
+            require_loopback_host(content_port, req, next)
+        }))
         .with_state(ContentState {
             db_path,
             ui_port,
@@ -362,8 +416,8 @@ mod tests {
             let db = dir.path().join("c.db");
             db::open(&db).unwrap();
             Fixture {
-                content: content_router(db.clone(), 7878, Renderer::start()),
-                ui: ui_router(db.clone(), "rev", 7879),
+                content: content_router(db.clone(), 7879, 7878, Renderer::start()),
+                ui: ui_router(db.clone(), "rev", 7878, 7879),
                 db,
                 _dir: dir,
             }
@@ -392,10 +446,22 @@ mod tests {
         }
     }
 
-    async fn get(router: &Router, uri: &str) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
+    const UI_HOST: &str = "127.0.0.1:7879";
+    const CONTENT_HOST: &str = "127.0.0.1:7878";
+
+    async fn get(
+        router: &Router,
+        host: &str,
+        uri: &str,
+    ) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
         let res = router
             .clone()
-            .oneshot(Request::get(uri).body(Body::empty()).unwrap())
+            .oneshot(
+                Request::get(uri)
+                    .header("host", host)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         let (parts, body) = res.into_parts();
@@ -448,14 +514,14 @@ mod tests {
         );
         let expect = "sandbox allow-scripts; default-src 'none'; script-src 'self' 'unsafe-inline'; \
             style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; \
-            connect-src 'none'; frame-ancestors http://127.0.0.1:7878";
+            connect-src 'none'; frame-ancestors http://127.0.0.1:7879";
         for (path, ct) in [
             ("index.html", "text/html"),
             ("style.css", "text/css"),
             ("app.js", "text/javascript"),
             ("p.png", "image/png"),
         ] {
-            let (st, hd, _) = get(&f.content, &format!("/a/{id}/1/{path}")).await;
+            let (st, hd, _) = get(&f.content, CONTENT_HOST, &format!("/a/{id}/1/{path}")).await;
             assert_eq!(st, StatusCode::OK, "{path}");
             assert_eq!(h(&hd, "content-security-policy"), expect);
             assert_eq!(h(&hd, "x-content-type-options"), "nosniff");
@@ -466,11 +532,11 @@ mod tests {
             &id,
             files(&[("index.html", b"<h1>two</h1>"), ("style.css", b"a{}")]),
         );
-        let (_, _, b1) = get(&f.content, &format!("/a/{id}/1/index.html")).await;
-        let (_, _, b2) = get(&f.content, &format!("/a/{id}/2/index.html")).await;
+        let (_, _, b1) = get(&f.content, CONTENT_HOST, &format!("/a/{id}/1/index.html")).await;
+        let (_, _, b2) = get(&f.content, CONTENT_HOST, &format!("/a/{id}/2/index.html")).await;
         assert_eq!(b1, b"<h1>one</h1>");
         assert_eq!(b2, b"<h1>two</h1>");
-        let (st, _, _) = get(&f.content, &format!("/a/{id}/2/p.png")).await;
+        let (st, _, _) = get(&f.content, CONTENT_HOST, &format!("/a/{id}/2/p.png")).await;
         assert_eq!(st, StatusCode::NOT_FOUND);
     }
 
@@ -485,13 +551,13 @@ mod tests {
             files(&[("d.svg", SVG.as_bytes())]),
         );
         let csp = "sandbox; default-src 'none'; style-src 'unsafe-inline'";
-        let (st, hd, body) = get(&f.content, &format!("/a/{img}/1/p.png")).await;
+        let (st, hd, body) = get(&f.content, CONTENT_HOST, &format!("/a/{img}/1/p.png")).await;
         assert_eq!(st, StatusCode::OK);
         assert_eq!(h(&hd, "content-type"), "image/png");
         assert_eq!(h(&hd, "content-security-policy"), csp);
         assert_eq!(h(&hd, "x-content-type-options"), "nosniff");
         assert_eq!(body, PNG);
-        let (st, hd, _) = get(&f.content, &format!("/a/{svg}/1/d.svg")).await;
+        let (st, hd, _) = get(&f.content, CONTENT_HOST, &format!("/a/{svg}/1/d.svg")).await;
         assert_eq!(st, StatusCode::OK);
         assert_eq!(h(&hd, "content-type"), "image/svg+xml");
         assert_eq!(h(&hd, "content-security-policy"), csp);
@@ -502,7 +568,7 @@ mod tests {
     async fn mermaid_renders_on_demand_with_one_engine() {
         let f = Fixture::new();
         let renderer = Renderer::start();
-        let content = content_router(f.db.clone(), 7878, renderer.clone());
+        let content = content_router(f.db.clone(), 7879, 7878, renderer.clone());
         let id = f.submit(
             "m",
             Kind::Diagram,
@@ -510,7 +576,8 @@ mod tests {
             files(&[("m.mmd", b"flowchart LR\n A --> B\n")]),
         );
         for _ in 0..3 {
-            let (st, hd, body) = get(&content, &format!("/a/{id}/1/diagram.svg")).await;
+            let (st, hd, body) =
+                get(&content, CONTENT_HOST, &format!("/a/{id}/1/diagram.svg")).await;
             assert_eq!(st, StatusCode::OK);
             assert_eq!(h(&hd, "content-type"), "image/svg+xml");
             assert_eq!(
@@ -524,7 +591,7 @@ mod tests {
         }
         assert_eq!(renderer.starts().await, 1);
         // The source is never served.
-        let (st, _, body) = get(&f.content, &format!("/a/{id}/1/m.mmd")).await;
+        let (st, _, body) = get(&f.content, CONTENT_HOST, &format!("/a/{id}/1/m.mmd")).await;
         assert_eq!(st, StatusCode::NOT_FOUND);
         assert_eq!(body, b"not found");
     }
@@ -558,7 +625,7 @@ mod tests {
             "/nothing".to_string(),
         ];
         for uri in uris {
-            let (st, hd, body) = get(&f.content, &uri).await;
+            let (st, hd, body) = get(&f.content, CONTENT_HOST, &uri).await;
             assert_eq!(st, StatusCode::NOT_FOUND, "{uri}");
             assert_eq!(body, b"not found", "{uri}");
             assert_eq!(h(&hd, "x-content-type-options"), "nosniff");
@@ -572,7 +639,12 @@ mod tests {
         let res = f
             .content
             .clone()
-            .oneshot(Request::post("/a/x/1/y").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::post("/a/x/1/y")
+                    .header("host", CONTENT_HOST)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
@@ -589,11 +661,11 @@ mod tests {
             None,
             files(&[("index.html", b"SECRET-HTML")]),
         );
-        let (st, hd, body) = get(&f.ui, &format!("/a/{id}/1/index.html")).await;
+        let (st, hd, body) = get(&f.ui, UI_HOST, &format!("/a/{id}/1/index.html")).await;
         assert_eq!(st, StatusCode::NOT_FOUND);
         assert!(!String::from_utf8_lossy(&body).contains("SECRET"));
         assert_eq!(h(&hd, "x-content-type-options"), "nosniff");
-        let (st, hd, body) = get(&f.ui, "/").await;
+        let (st, hd, body) = get(&f.ui, UI_HOST, "/").await;
         assert_eq!(st, StatusCode::OK);
         assert!(h(&hd, "content-security-policy").contains("frame-ancestors 'self'"));
         assert!(String::from_utf8(body).unwrap().contains("rev"));
@@ -623,7 +695,7 @@ mod tests {
         let a = md(&f, "plan <b>&\"'", "# T\n");
         let img = f.submit("pic", Kind::Image, None, files(&[("p.png", PNG)]));
         // Newest activity first.
-        let (st, _, body) = get(&f.ui, "/").await;
+        let (st, _, body) = get(&f.ui, UI_HOST, "/").await;
         assert_eq!(st, StatusCode::OK);
         let body = text(&body);
         assert!(body.contains(&format!("href=\"/a/{a}\"")), "{body}");
@@ -636,16 +708,17 @@ mod tests {
             "{body}"
         );
         assert!(!body.contains("<b>&"));
-        let (_, _, body) = get(&f.ui, "/?kind=image").await;
+        let (_, _, body) = get(&f.ui, UI_HOST, "/?kind=image").await;
         let body = text(&body);
         assert!(body.contains(&img) && !body.contains(&format!("/a/{a}\"")));
-        let (_, _, body) = get(&f.ui, "/?kind=nope").await;
+        let (_, _, body) = get(&f.ui, UI_HOST, "/?kind=nope").await;
         assert_eq!(text(&body), "bad kind");
         // htmx asks for the table only.
         let res =
             f.ui.clone()
                 .oneshot(
                     Request::get("/?kind=image")
+                        .header("host", UI_HOST)
                         .header("hx-target", "artifacts")
                         .body(Body::empty())
                         .unwrap(),
@@ -681,7 +754,7 @@ mod tests {
             )
             .unwrap();
         }
-        let (_, _, body) = get(&f.ui, "/?project=alpha").await;
+        let (_, _, body) = get(&f.ui, UI_HOST, "/?project=alpha").await;
         let body = text(&body);
         assert!(
             body.contains(">one</a>") && !body.contains(">two</a>"),
@@ -689,7 +762,7 @@ mod tests {
         );
         // The dropdown still offers every project.
         assert!(body.contains("value=\"beta\""));
-        let (_, _, body) = get(&f.ui, "/").await;
+        let (_, _, body) = get(&f.ui, UI_HOST, "/").await;
         let body = text(&body);
         assert!(body.contains(">one</a>") && body.contains(">two</a>"));
     }
@@ -720,7 +793,7 @@ mod tests {
                 section: None,
             },
         );
-        let (st, _, latest) = get(&f.ui, &format!("/a/{id}")).await;
+        let (st, _, latest) = get(&f.ui, UI_HOST, &format!("/a/{id}")).await;
         assert_eq!(st, StatusCode::OK);
         let latest = text(&latest);
         assert!(
@@ -735,9 +808,9 @@ mod tests {
         // Outline with per-Section open Thread counts.
         assert!(latest.contains("href=\"#s1\"") && latest.contains("href=\"#s2\""));
         assert_eq!(latest.matches("pill open").count(), 2, "{latest}");
-        let (_, _, same) = get(&f.ui, &format!("/a/{id}@2")).await;
+        let (_, _, same) = get(&f.ui, UI_HOST, &format!("/a/{id}@2")).await;
         assert!(text(&same).contains("ONE"));
-        let (_, _, old) = get(&f.ui, &format!("/a/{id}@1")).await;
+        let (_, _, old) = get(&f.ui, UI_HOST, &format!("/a/{id}@1")).await;
         let old = text(&old);
         assert!(old.contains("<p>one</p>") && !old.contains("<p>ONE</p>"));
         assert!(
@@ -745,7 +818,7 @@ mod tests {
             "{old}"
         );
         // The no-JS dropdown form redirects to the canonical URL.
-        let (st, hd, _) = get(&f.ui, &format!("/a/{id}?rev=1")).await;
+        let (st, hd, _) = get(&f.ui, UI_HOST, &format!("/a/{id}?rev=1")).await;
         assert_eq!(st, StatusCode::SEE_OTHER);
         assert_eq!(h(&hd, "location"), format!("/a/{id}@1"));
         for bad in [
@@ -754,7 +827,7 @@ mod tests {
             "/a/nope".into(),
             format!("/a/{id}?rev=9x"),
         ] {
-            let (st, _, body) = get(&f.ui, &bad).await;
+            let (st, _, body) = get(&f.ui, UI_HOST, &bad).await;
             assert_eq!(st, StatusCode::NOT_FOUND, "{bad}");
             assert_eq!(body, b"not found");
         }
@@ -774,7 +847,7 @@ mod tests {
         c.author = "<i>eve</i>".into();
         artifact::edit(&mut conn, &c, &id, files(&[("a.md", b"# x\n")]), None, &[]).unwrap();
         for uri in [format!("/a/{id}@1"), format!("/a/{id}@2"), "/".to_string()] {
-            let (_, _, body) = get(&f.ui, &uri).await;
+            let (_, _, body) = get(&f.ui, UI_HOST, &uri).await;
             let body = text(&body);
             assert!(!body.contains("<script>alert"), "{uri}: {body}");
             assert!(!body.contains("<img") && !body.contains("onerror"), "{uri}");
@@ -785,7 +858,7 @@ mod tests {
             assert!(!body.contains("<i>eve"), "{uri}: {body}");
             assert!(!body.contains("<b>h"), "{uri}");
         }
-        let (_, _, body) = get(&f.ui, &format!("/a/{id}@1")).await;
+        let (_, _, body) = get(&f.ui, UI_HOST, &format!("/a/{id}@1")).await;
         let body = text(&body);
         assert!(
             body.contains("&lt;script&gt;alert(&#39;n&#39;)&lt;/script&gt;")
@@ -800,7 +873,7 @@ mod tests {
         let f = Fixture::new();
         let id = md(&f, "d", "# x\n");
         for uri in ["/", &format!("/a/{id}"), "/nope", "/static/zzz/app.css"] {
-            let (_, hd, _) = get(&f.ui, uri).await;
+            let (_, hd, _) = get(&f.ui, UI_HOST, uri).await;
             let csp = h(&hd, "content-security-policy");
             assert!(csp.contains("frame-ancestors 'self'"), "{uri}: {csp}");
             assert!(
@@ -818,7 +891,7 @@ mod tests {
     #[tokio::test]
     async fn static_assets_are_versioned_and_cached() {
         let f = Fixture::new();
-        let (_, _, page) = get(&f.ui, "/").await;
+        let (_, _, page) = get(&f.ui, UI_HOST, "/").await;
         let page = text(&page);
         for (ext, ct) in [
             ("htmx.js", "text/javascript"),
@@ -832,19 +905,26 @@ mod tests {
                 .find(|p| p.starts_with("/static/") && p.ends_with(ext))
                 .unwrap_or_else(|| panic!("no {ext} in {page}"))
                 .to_string();
-            let (st, hd, body) = get(&f.ui, &href).await;
+            let (st, hd, body) = get(&f.ui, UI_HOST, &href).await;
             assert_eq!(st, StatusCode::OK, "{href}");
             assert!(h(&hd, "content-type").starts_with(ct));
             assert!(h(&hd, "cache-control").contains("immutable"));
             assert!(!body.is_empty());
             let stale = href.replace("/static/", "/static/x");
-            assert_eq!(get(&f.ui, &stale).await.0, StatusCode::NOT_FOUND);
+            assert_eq!(get(&f.ui, UI_HOST, &stale).await.0, StatusCode::NOT_FOUND);
         }
     }
 
-    async fn post(router: &Router, uri: &str, form: &str, htmx: bool) -> (StatusCode, String) {
-        let mut req =
-            Request::post(uri).header("content-type", "application/x-www-form-urlencoded");
+    async fn post(
+        router: &Router,
+        host: &str,
+        uri: &str,
+        form: &str,
+        htmx: bool,
+    ) -> (StatusCode, String) {
+        let mut req = Request::post(uri)
+            .header("host", host)
+            .header("content-type", "application/x-www-form-urlencoded");
         if htmx {
             req = req.header("hx-request", "true");
         }
@@ -881,7 +961,7 @@ mod tests {
         let f = Fixture::new();
         let id = md(&f, "doc", "# Goal\n\none\n\n## Design\n\ntwo\n");
         // Gutter buttons and the per-heading button are on the page.
-        let (_, _, page) = get(&f.ui, &format!("/a/{id}")).await;
+        let (_, _, page) = get(&f.ui, UI_HOST, &format!("/a/{id}")).await;
         let page = text(&page);
         assert!(
             page.contains(&format!("hx-get=\"/a/{id}@1/compose?line=3\"")),
@@ -891,16 +971,16 @@ mod tests {
             page.contains("+ section") && page.contains("Goal &gt; Design"),
             "{page}"
         );
-        let (st, _, form) = get(&f.ui, &format!("/a/{id}@1/compose?line=3")).await;
+        let (st, _, form) = get(&f.ui, UI_HOST, &format!("/a/{id}@1/compose?line=3")).await;
         assert_eq!(st, StatusCode::OK);
         assert!(text(&form).contains("name=\"line\" value=\"3\""));
-        let (st, _, _) = get(&f.ui, &format!("/a/{id}@1/compose")).await;
+        let (st, _, _) = get(&f.ui, UI_HOST, &format!("/a/{id}@1/compose")).await;
         assert_eq!(st, StatusCode::BAD_REQUEST);
 
         // Writes need htmx's header, and a same-origin Origin if one is sent.
         let new = format!("/a/{id}@1/threads");
         assert_eq!(
-            post(&f.ui, &new, "body=x&line=3", false).await.0,
+            post(&f.ui, UI_HOST, &new, "body=x&line=3", false).await.0,
             StatusCode::FORBIDDEN
         );
         let res =
@@ -909,7 +989,7 @@ mod tests {
                     Request::post(&new)
                         .header("content-type", "application/x-www-form-urlencoded")
                         .header("hx-request", "true")
-                        .header("host", "127.0.0.1:7878")
+                        .header("host", UI_HOST)
                         .header("origin", "http://evil.example")
                         .body(Body::from("body=x&line=3"))
                         .unwrap(),
@@ -920,7 +1000,14 @@ mod tests {
         assert!(threads(&f, &id).is_empty());
 
         // New Thread on a line: shown under its block, attributed to the reviewer.
-        let (st, frag) = post(&f.ui, &new, "body=%3Cb%3Ehello%3C%2Fb%3E&line=3", true).await;
+        let (st, frag) = post(
+            &f.ui,
+            UI_HOST,
+            &new,
+            "body=%3Cb%3Ehello%3C%2Fb%3E&line=3",
+            true,
+        )
+        .await;
         assert_eq!(st, StatusCode::OK, "{frag}");
         assert!(frag.starts_with("<div id=\"live\""), "{frag}");
         assert!(frag.contains("&lt;b&gt;hello&lt;/b&gt;") && !frag.contains("<b>hello"));
@@ -933,7 +1020,14 @@ mod tests {
         assert_eq!(t[0].locator.line_start, Some(3));
         let tid = t[0].id;
         // Section Thread.
-        let (st, _) = post(&f.ui, &new, "body=sec&section=Goal+%3E+Design", true).await;
+        let (st, _) = post(
+            &f.ui,
+            UI_HOST,
+            &new,
+            "body=sec&section=Goal+%3E+Design",
+            true,
+        )
+        .await;
         assert_eq!(st, StatusCode::OK);
         assert_eq!(
             threads(&f, &id)[1].locator.section_path.as_deref(),
@@ -941,17 +1035,31 @@ mod tests {
         );
         // Reply, resolve, reopen.
         let base = format!("/a/{id}@1/threads/{tid}");
-        let (st, _) = post(&f.ui, &format!("{base}/reply"), "body=again", true).await;
+        let (st, _) = post(&f.ui, UI_HOST, &format!("{base}/reply"), "body=again", true).await;
         assert_eq!(st, StatusCode::OK);
         let t = threads(&f, &id);
         assert_eq!(t[0].replies.len(), 1);
         assert_eq!(t[0].replies[0].author, "rev");
         assert_eq!(t[0].replies[0].role, "reviewer");
-        let (st, frag) = post(&f.ui, &format!("{base}/status"), "status=resolved", true).await;
+        let (st, frag) = post(
+            &f.ui,
+            UI_HOST,
+            &format!("{base}/status"),
+            "status=resolved",
+            true,
+        )
+        .await;
         assert_eq!(st, StatusCode::OK);
         assert_eq!(threads(&f, &id)[0].status, "resolved");
         assert!(frag.contains("Reopen"), "{frag}");
-        let (_, _) = post(&f.ui, &format!("{base}/status"), "status=open", true).await;
+        let (_, _) = post(
+            &f.ui,
+            UI_HOST,
+            &format!("{base}/status"),
+            "status=open",
+            true,
+        )
+        .await;
         assert_eq!(threads(&f, &id)[0].status, "open");
         // Bad input is a fixed 4xx and writes nothing.
         for (uri, form, want) in [
@@ -973,7 +1081,7 @@ mod tests {
                 StatusCode::NOT_FOUND,
             ),
         ] {
-            let (st, body) = post(&f.ui, &uri, form, true).await;
+            let (st, body) = post(&f.ui, UI_HOST, &uri, form, true).await;
             assert_eq!(st, want, "{uri} {body}");
             assert!(body == "bad request" || body == "not found", "{body}");
         }
@@ -982,6 +1090,7 @@ mod tests {
         let other = md(&f, "other", "# O\n");
         let (st, _) = post(
             &f.ui,
+            UI_HOST,
             &format!("/a/{other}/threads/{tid}/status"),
             "status=resolved",
             true,
@@ -995,7 +1104,7 @@ mod tests {
     async fn live_poll_sees_cli_comments_and_resolves() {
         let f = Fixture::new();
         let id = md(&f, "doc", "# Goal\n\none\n");
-        let (_, _, page) = get(&f.ui, &format!("/a/{id}")).await;
+        let (_, _, page) = get(&f.ui, UI_HOST, &format!("/a/{id}")).await;
         let page = text(&page);
         assert!(page.contains("data-poll") && page.contains("hx-trigger=\"every 2s\""));
         let marker = page
@@ -1005,7 +1114,7 @@ mod tests {
             .unwrap()
             .to_string();
         let live = format!("/a/{id}@1/live?m={marker}");
-        assert_eq!(get(&f.ui, &live).await.0, StatusCode::NO_CONTENT);
+        assert_eq!(get(&f.ui, UI_HOST, &live).await.0, StatusCode::NO_CONTENT);
         // A Comment posted from elsewhere changes the marker and shows up.
         comment(
             &f,
@@ -1016,7 +1125,7 @@ mod tests {
                 section: None,
             },
         );
-        let (st, _, frag) = get(&f.ui, &live).await;
+        let (st, _, frag) = get(&f.ui, UI_HOST, &live).await;
         assert_eq!(st, StatusCode::OK);
         let frag = text(&frag);
         assert!(frag.starts_with("<div id=\"live\"") && frag.contains("from the CLI"));
@@ -1029,14 +1138,14 @@ mod tests {
             .unwrap()
             .to_string();
         let live = format!("/a/{id}@1/live?m={marker}");
-        assert_eq!(get(&f.ui, &live).await.0, StatusCode::NO_CONTENT);
+        assert_eq!(get(&f.ui, UI_HOST, &live).await.0, StatusCode::NO_CONTENT);
         let tid = threads(&f, &id)[0].id;
         crate::comments::set_status(&mut db::open(&f.db).unwrap(), tid, "resolved").unwrap();
-        let (st, _, frag) = get(&f.ui, &live).await;
+        let (st, _, frag) = get(&f.ui, UI_HOST, &live).await;
         assert_eq!(st, StatusCode::OK);
         assert_eq!(text(&frag).matches("pill open").count(), 0);
         assert_eq!(
-            get(&f.ui, &format!("/a/{id}@9/live")).await.0,
+            get(&f.ui, UI_HOST, &format!("/a/{id}@9/live")).await.0,
             StatusCode::NOT_FOUND
         );
     }
@@ -1066,7 +1175,7 @@ mod tests {
             &id,
             files(&[("a.md", b"# Goal\n\nONE\n\n## Design\n\ntwo\n")]),
         );
-        let (_, _, r2) = get(&f.ui, &format!("/a/{id}")).await;
+        let (_, _, r2) = get(&f.ui, UI_HOST, &format!("/a/{id}")).await;
         let r2 = text(&r2);
         assert!(
             r2.contains("open-on-r1") && r2.contains("line-on-r1"),
@@ -1079,13 +1188,13 @@ mod tests {
         assert!(r2.find("Design</h2>").unwrap() < r2.find("open-on-r1").unwrap());
         assert_eq!(r2.matches("pill open").count(), 1, "{r2}");
         // On its own Revision the resolved Thread shows, not dashed.
-        let (_, _, r1) = get(&f.ui, &format!("/a/{id}@1")).await;
+        let (_, _, r1) = get(&f.ui, UI_HOST, &format!("/a/{id}@1")).await;
         let r1 = text(&r1);
         assert!(r1.contains("resolved-on-r1"), "{r1}");
         assert!(!r1.contains("earlier revision"), "{r1}");
         assert!(r1.contains("class=\"thread resolved\""), "{r1}");
         // The list counts open Threads only.
-        let (_, _, list) = get(&f.ui, "/").await;
+        let (_, _, list) = get(&f.ui, UI_HOST, "/").await;
         assert!(text(&list).contains("<span class=\"pill open\">2</span>"));
     }
 
@@ -1093,8 +1202,61 @@ mod tests {
     async fn non_markdown_kind_gets_a_placeholder_page() {
         let f = Fixture::new();
         let id = f.submit("pic", Kind::Image, None, files(&[("p.png", PNG)]));
-        let (st, _, body) = get(&f.ui, &format!("/a/{id}")).await;
+        let (st, _, body) = get(&f.ui, UI_HOST, &format!("/a/{id}")).await;
         assert_eq!(st, StatusCode::OK);
         assert!(text(&body).contains("not shown in the UI yet"));
+    }
+    #[tokio::test]
+    async fn host_allowlist_on_both_routers() {
+        let f = Fixture::new();
+        for (router, port, path) in [(&f.ui, 7879, "/"), (&f.content, 7878, "/a/x/1/y")] {
+            for ok in [
+                format!("127.0.0.1:{port}"),
+                format!("localhost:{port}"),
+                format!("LocalHost:{port}"),
+                format!("[::1]:{port}"),
+            ] {
+                let (st, _, _) = get(router, &ok, path).await;
+                assert_ne!(st, StatusCode::FORBIDDEN, "{ok}");
+            }
+            for bad in [
+                format!("evil.example:{port}"),
+                "evil.example".to_string(),
+                "127.0.0.1:1".to_string(),
+                format!("localhost.evil.example:{port}"),
+                format!("127.0.0.1:{port}.evil.example"),
+            ] {
+                let (st, hd, _) = get(router, &bad, path).await;
+                assert_eq!(st, StatusCode::FORBIDDEN, "{bad}");
+                assert_eq!(h(&hd, "x-content-type-options"), "nosniff");
+            }
+            let res = router
+                .clone()
+                .oneshot(Request::get(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::FORBIDDEN, "missing host");
+        }
+    }
+
+    #[tokio::test]
+    async fn dns_rebinding_post_is_refused_and_writes_nothing() {
+        let f = Fixture::new();
+        let id = md(&f, "doc", "one\n\ntwo\n");
+        let res =
+            f.ui.clone()
+                .oneshot(
+                    Request::post(format!("/a/{id}@1/threads"))
+                        .header("content-type", "application/x-www-form-urlencoded")
+                        .header("hx-request", "true")
+                        .header("host", "evil.example:7879")
+                        .header("origin", "http://evil.example:7879")
+                        .body(Body::from("body=x&line=1"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        assert!(threads(&f, &id).is_empty());
     }
 }

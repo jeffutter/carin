@@ -2826,7 +2826,7 @@ mod serve {
             let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
             write!(
                 s,
-                "GET {path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+                "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
             )
             .unwrap();
             let mut r = String::new();
