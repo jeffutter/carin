@@ -278,14 +278,25 @@ pub fn run(command: Command, ctx: &Context) -> Result<u8, Error> {
 }
 
 /// Write a Revision's files under `dir` and return the file list.
+///
+/// Two phases: validate everything without touching the disk, then write.
+/// Existing regular files are overwritten (re-running `get` into the same
+/// directory refreshes it). Symlinks beneath `dir` are never followed, and
+/// file/directory clashes are refused before anything is written. `dir`
+/// itself may be a symlink, since the caller chose it.
 fn write_out(
     dir: &std::path::Path,
     files: &[artifact::StoredFile],
 ) -> Result<Vec<serde_json::Value>, Error> {
+    use std::collections::BTreeSet;
     let io = |p: &std::path::Path, e: std::io::Error| {
         Error::Unexpected(format!("cannot write {}: {e}", p.display()))
     };
-    let mut listing = Vec::with_capacity(files.len());
+    let refuse = |msg: String| Error::Unexpected(format!("refusing to write: {msg}"));
+
+    // Phase 1a: path safety and file-set clashes (a.js vs a.js/b.css).
+    let mut file_paths = BTreeSet::new();
+    let mut dir_paths = BTreeSet::new();
     for f in files {
         if !bundle::safe_path(&f.path) {
             return Err(Error::Unexpected(format!(
@@ -293,11 +304,68 @@ fn write_out(
                 f.path
             )));
         }
+        file_paths.insert(f.path.as_str());
+        let mut end = 0;
+        while let Some(i) = f.path[end..].find('/') {
+            end += i;
+            dir_paths.insert(&f.path[..end]);
+            end += 1;
+        }
+    }
+    if let Some(clash) = file_paths.intersection(&dir_paths).next() {
+        return Err(refuse(format!(
+            "{clash:?} is both a file and a directory in this Revision"
+        )));
+    }
+
+    // Phase 1b: walk each destination below `dir` for symlinks and clashes
+    // with what already exists on disk.
+    for f in files {
+        let mut cur = dir.to_path_buf();
+        let n = f.path.split('/').count();
+        for (i, comp) in f.path.split('/').enumerate() {
+            cur.push(comp);
+            let meta = match std::fs::symlink_metadata(&cur) {
+                Ok(m) => m,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
+                Err(e) => return Err(io(&cur, e)),
+            };
+            let last = i + 1 == n;
+            if meta.file_type().is_symlink() {
+                return Err(refuse(format!("{} is a symlink", cur.display())));
+            }
+            if last && meta.is_dir() {
+                return Err(refuse(format!(
+                    "{} is an existing directory",
+                    cur.display()
+                )));
+            }
+            if !last && !meta.is_dir() {
+                return Err(refuse(format!("{} is not a directory", cur.display())));
+            }
+        }
+    }
+
+    // Phase 2. An existing regular file is removed and recreated with
+    // create_new (O_EXCL), which fails rather than follows a symlink raced
+    // in after phase 1.
+    let mut listing = Vec::with_capacity(files.len());
+    for f in files {
         let dest = dir.join(&f.path);
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent).map_err(|e| io(parent, e))?;
         }
-        std::fs::write(&dest, &f.bytes).map_err(|e| io(&dest, e))?;
+        match std::fs::remove_file(&dest) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(io(&dest, e)),
+        }
+        let mut h = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&dest)
+            .map_err(|e| io(&dest, e))?;
+        h.write_all(&f.bytes).map_err(|e| io(&dest, e))?;
         listing.push(serde_json::json!({
             "path": f.path, "media_type": f.media_type, "size": f.size
         }));

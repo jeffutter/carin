@@ -2222,6 +2222,104 @@ mod bundles {
         );
     }
 
+    fn submit_site(d: &Path, db: &Path) -> String {
+        let dir = site(d);
+        ok(db, &["submit", s(&dir)])["id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn get_out_refuses_symlinked_file() {
+        let d = tempfile::tempdir().unwrap();
+        let db = d.path().join("c.db");
+        let id = submit_site(d.path(), &db);
+        let target = d.path().join("victim.txt");
+        std::fs::write(&target, "precious").unwrap();
+        let out = d.path().join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        std::os::unix::fs::symlink(&target, out.join("index.html")).unwrap();
+        assert_eq!(code(&db, &["get", &id, "--out", s(&out)]), Some(1));
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "precious");
+        assert!(!out.join("logo.png").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn get_out_refuses_symlinked_directory() {
+        let d = tempfile::tempdir().unwrap();
+        let db = d.path().join("c.db");
+        let id = submit_site(d.path(), &db);
+        let elsewhere = d.path().join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let out = d.path().join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, out.join("css")).unwrap();
+        assert_eq!(code(&db, &["get", &id, "--out", s(&out)]), Some(1));
+        assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0);
+        assert!(!out.join("index.html").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn get_out_allows_symlinked_out_dir() {
+        let d = tempfile::tempdir().unwrap();
+        let db = d.path().join("c.db");
+        let id = submit_site(d.path(), &db);
+        let real = d.path().join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        let out = d.path().join("out");
+        std::os::unix::fs::symlink(&real, &out).unwrap();
+        ok(&db, &["get", &id, "--out", s(&out)]);
+        assert!(real.join("index.html").exists());
+    }
+
+    #[test]
+    fn get_out_file_dir_clash_in_revision_writes_nothing() {
+        let d = tempfile::tempdir().unwrap();
+        let db = d.path().join("c.db");
+        let id = submit_site(d.path(), &db);
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute(
+            "INSERT INTO revision_files SELECT artifact_id, revision, 'css', media_type, size, sha256 \
+             FROM revision_files WHERE path = 'index.html'",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        let out = d.path().join("out");
+        assert_eq!(code(&db, &["get", &id, "--out", s(&out)]), Some(1));
+        assert!(!out.exists() || std::fs::read_dir(&out).unwrap().count() == 0);
+    }
+
+    #[test]
+    fn get_out_overwrites_existing_regular_file() {
+        let d = tempfile::tempdir().unwrap();
+        let db = d.path().join("c.db");
+        let id = submit_site(d.path(), &db);
+        let out = d.path().join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        std::fs::write(out.join("index.html"), "old").unwrap();
+        ok(&db, &["get", &id, "--out", s(&out)]);
+        assert_eq!(
+            std::fs::read_to_string(out.join("index.html")).unwrap(),
+            "<h1>hi</h1>"
+        );
+    }
+
+    #[test]
+    fn get_out_refuses_existing_directory_where_file_goes() {
+        let d = tempfile::tempdir().unwrap();
+        let db = d.path().join("c.db");
+        let id = submit_site(d.path(), &db);
+        let out = d.path().join("out");
+        std::fs::create_dir_all(out.join("index.html")).unwrap();
+        assert_eq!(code(&db, &["get", &id, "--out", s(&out)]), Some(1));
+        assert!(!out.join("logo.png").exists());
+    }
+
     #[test]
     fn single_html_is_stored_as_index_and_image_roundtrips() {
         let d = tempfile::tempdir().unwrap();
