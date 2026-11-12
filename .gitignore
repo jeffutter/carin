@@ -1,2 +1,6 @@
 /target
 /result
+
+# Herdr writes editor typing files into mod folders
+herdr/*/mods/*/jsconfig.json
+herdr/*/mods/*/*.d.ts

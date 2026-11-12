@@ -83,7 +83,7 @@ function ago(iso) {
 
 export default class Cairn extends View {
   init(_props, cx) {
-    this.items = []; this.seen = null; this.context = null; this.bin = null;
+    this.items = []; this.seen = null; this.context = null; this.bin = null; this.parked = new Map();
     this.view = null; this.detail = null; this.threads = []; this.error = null; this.loading = false;
     this.refresh(cx);
     cx.timer.every(POLL_MS, (cx) => this.refresh(cx));
@@ -109,8 +109,12 @@ export default class Cairn extends View {
     if (this.loading) return;
     const loc = location(), context = key();
     if (context !== this.context) {
-      // A different space or folder: forget what was seen so its Artifacts do not read as new.
-      this.context = context; this.seen = null; this.items = []; this.view = null; this.detail = null; this.threads = [];
+      // A different space or folder: park this one's state and restore the target's, so coming
+      // back finds the same Artifact open. A context never visited starts with no "seen" map,
+      // so its existing Artifacts do not read as new.
+      if (this.context !== null) this.parked.set(this.context, { seen: this.seen, items: this.items, view: this.view, detail: this.detail, threads: this.threads });
+      const s = this.parked.get(context) ?? { seen: null, items: [], view: null, detail: null, threads: [] };
+      this.context = context; this.seen = s.seen; this.items = s.items; this.view = s.view; this.detail = s.detail; this.threads = s.threads;
     }
     if (!loc.cwd) return;
     this.loading = true;

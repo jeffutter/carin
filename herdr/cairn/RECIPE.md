@@ -17,7 +17,7 @@ A panel in the layout's right column, sharing it with Files and Changes (a Cairn
 
 ## How it behaves
 
-- Polls `cairn --json list --limit 200` every 3 s in the active space's folder (the focused pane's `cwd`, else the space's folder). Changing space or folder drops the list and the "seen" map.
+- Polls `cairn --json list --limit 200` every 3 s in the active space's folder (the focused pane's `cwd`, else the space's folder). Changing space or folder parks that context's list, "seen" map and open Artifact in memory and restores them on return, so the panel comes back on the same Artifact. A context not visited before starts with a fresh baseline.
 - **Auto-open:** the first successful list per space is a baseline. Afterwards an Artifact whose id is new or whose `latest_revision` rose is "changed"; the newest one is shown: `run("layout.select", {stack: "panel-body", child: "cairn"})`, `run("layout.show", {id: "panel"})`, and the detail view loads. While a detail is open it reloads on each poll.
 - **Open ↗:** `cairn view ID@REV` gives the web UI URL (honors `CAIRN_URL`); the mod fetches it, and if nothing answers posts a warning toast "Nothing is listening at URL. Run `cairn serve`", else runs `open URL` (falling back to `xdg-open`). On a space from another machine it posts a toast instead.
 - No keys. Clicks: a row opens that Artifact; the back arrow returns to the list.
