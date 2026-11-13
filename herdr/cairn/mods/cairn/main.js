@@ -70,14 +70,36 @@ function splitAtEmbeds(md, embeds, headings = []) {
     ...embeds.filter((e) => /^\s*!\[[^\]]*\]\(cairn:[^)]*\)\s*$/.test(lines[e.line - 1] ?? "")).map((e) => ({ line: e.line, embed: e })),
     ...headings.map((h) => ({ line: h.line, path: h.path })),
   ].sort((a, b) => a.line - b.line);
-  const flush = (to) => { if (to > from) parts.push(section === null ? { text: lines.slice(from, to).join("\n") } : { text: lines.slice(from, to).join("\n"), section }); section = null; };
+  const flush = (to) => { if (to > from) parts.push({ text: lines.slice(from, to).join("\n"), start: from + 1, end: to, ...(section === null ? {} : { section }) }); section = null; };
   for (const ev of events) {
     flush(ev.line - 1);
-    if (ev.embed) { parts.push({ embed: ev.embed }); from = ev.line; }
+    if (ev.embed) { parts.push({ embed: ev.embed, start: ev.line, end: ev.line }); from = ev.line; }
     else { from = ev.line - 1; section = ev.path; }
   }
   flush(lines.length);
   return parts;
+}
+
+// Splits Threads into those drawn right after a markdown part and the rest (drawn at the bottom).
+// Only Threads on the displayed Revision `rev` are placed, since a Thread's section path and
+// lines are resolved against its own Revision. A section path goes under the part carrying that
+// section; otherwise a line goes under the part whose span holds it (the last part if past the
+// end). No locator, no matching section, or a non-markdown Artifact: `rest`. Order is preserved.
+function placeThreads(threads, parts, rev) {
+  const byPart = new Map(), rest = [];
+  for (const th of threads) {
+    const loc = th.locator ?? {};
+    let at = -1;
+    if (parts && parts.length && th.revision === rev) {
+      if (loc.section_path) at = parts.findIndex((p) => p.section === loc.section_path);
+      else if (loc.line_start) {
+        at = parts.findIndex((p) => p.start !== undefined && loc.line_start >= p.start && loc.line_start <= p.end);
+        if (at < 0 && loc.line_start > parts[parts.length - 1].end) at = parts.length - 1;
+      }
+    }
+    if (at < 0) rest.push(th); else byPart.set(at, [...(byPart.get(at) ?? []), th]);
+  }
+  return { byPart, rest };
 }
 
 // Cairn review panel: lists the Artifacts registered for the active space's project
@@ -384,10 +406,31 @@ export default class Cairn extends View {
     ];
   }
 
+  threadCard(th, t) {
+    return v_flex().gap(4).p(8).rounded(7).border_1().border_color(th.status === "open" ? t.blocked : t.border)
+      .child(h_flex().gap(6).text_size(11).text_color(t.dim)
+        .child(div().child(th.author)).child(div().child(th.locator?.section_path ?? (th.locator?.line_start ? `line ${th.locator.line_start}` : "whole revision")))
+        .child(div().flex_1()).child(div().child(`${th.status}${th.stale ? " · stale" : ""}`))
+        .child(div().id(`cairn-thread-${th.id}-toggle`).flex_none().px(7).py(3).rounded(5).cursor_pointer().text_size(11).text_color(t.muted).hover((s) => s.bg(t.hover))
+          .on_click((_e, cx) => cx.spawn(async (cx) => {
+            this.writeErrorThread = th.id;
+            await this.write([th.status === "open" ? "resolve" : "reopen", String(th.id)], this.view, cx);
+          }))
+          .child(th.status === "open" ? "Resolve" : "Reopen"))
+        .child(div().id(`cairn-thread-${th.id}-reply`).flex_none().px(7).py(3).rounded(5).cursor_pointer().text_size(11).text_color(t.muted).hover((s) => s.bg(t.hover))
+          .on_click((_e, cx) => this.openComposer(["reply", th.id], (text, cx) => this.write(["add", this.view, text, "--reply", String(th.id)], this.view, cx), cx))
+          .child("Reply")))
+      .child(div().text_size(12).child(th.body))
+      .children((th.replies ?? []).map((r) => div().pl(10).text_size(12).text_color(t.muted).child(`${r.author}: ${r.body}`)))
+      .when(this.writeErrorThread === th.id && Boolean(this.writeError), (e) => e.child(this.writeErrorLine(t)))
+      .when(this.isReplyTo(th), (e) => e.child(this.composerView(t)));
+  }
+
   detailView(t) {
     const item = this.items.find((a) => a.id === this.view);
     const d = this.detail;
-    const threads = this.threads;
+    const { byPart, rest } = placeThreads(this.threads, d?.kind === "markdown" ? d.parts : null, d?.rev);
+    const withThreads = (i, el) => byPart.has(i) ? v_flex().gap(8).child(el).children(byPart.get(i).map((th) => this.threadCard(th, t))) : el;
     return [
       this.header(t, item ? item.name : this.view, true).child(div().flex_none().text_size(11).text_color(t.dim).child(item ? `${item.kind} · r${item.latest_revision}` : ""))
         .when(Boolean(item), (e) => e.child(div().id("cairn-comment").flex_none().px(7).py(3).rounded(5).cursor_pointer().text_size(11).text_color(t.muted).hover((s) => s.bg(t.hover))
@@ -396,37 +439,20 @@ export default class Cairn extends View {
       div().flex_1().min_h(0).relative()
         .child(v_flex().id("cairn-doc").absolute().inset_0().overflow_y_scroll().p(14).gap(12)
           .when(!d, (e) => e.child(div().text_color(t.dim).child(this.error || "Loading…")))
-          .when(d && d.kind === "markdown", (e) => e.children((d.parts ?? []).map((p, i) => p.embed
+          .when(d && d.kind === "markdown", (e) => e.children((d.parts ?? []).map((p, i) => withThreads(i, p.embed
             ? (p.pic ? this.picElement(p.pic, t) : div().text_size(11).text_color(t.dim).child(`[embedded ${p.embed.target_id}${p.embed.dangling ? " (deleted)" : " cannot be shown here"}${p.embed.alt ? `: ${p.embed.alt}` : ""}]`))
             : p.section !== undefined
               ? h_flex().gap(6).items_start()
                 .child(div().flex_1().min_w(0).child(TextView.markdown(`cairn-md-${i}`, p.text).selectable()))
                 .when(Boolean(item), (e) => e.child(div().id(`cairn-sec-${i}`).flex_none().px(7).py(3).rounded(5).cursor_pointer().text_size(11).text_color(t.muted).hover((s) => s.bg(t.hover))
                   .on_click((_e, cx) => { const rev = item.latest_revision; this.openComposer(["section", p.section], (text, cx) => this.write(["add", `${item.id}@${rev}`, text, "--section", p.section], item.id, cx), cx); }).child("+")))
-              : TextView.markdown(`cairn-md-${i}`, p.text).selectable())))
+              : TextView.markdown(`cairn-md-${i}`, p.text).selectable()))))
           .when(d && d.pic, (e) => e.child(this.picElement(d.pic, t)))
           .when(d && d.kind === "diagram" && !d.pic, (e) => e.child(div().text_size(11).text_color(t.dim).child("Could not render this diagram; showing source.")).child(div().font_family(settings().font_family ?? "JetBrains Mono").text_size(11).child(d.body ?? "")))
           .when(d && d.kind === "image" && !d.pic, (e) => e.child(div().text_color(t.dim).child("Cannot show this image here.")))
           .when(d && d.kind === "html", (e) => e.child(div().text_color(t.dim).child("html bundles are not rendered in this panel (herdr has no web view). Open it in the cairn web UI.")))
-          .when(threads.length > 0, (e) => e.child(div().font_semibold().pt(6).border_t(1).border_color(t.border).child("Comments")))
-          .children(threads.map((th) =>
-            v_flex().gap(4).p(8).rounded(7).border_1().border_color(th.status === "open" ? t.blocked : t.border)
-              .child(h_flex().gap(6).text_size(11).text_color(t.dim)
-                .child(div().child(th.author)).child(div().child(th.locator?.section_path ?? (th.locator?.line_start ? `line ${th.locator.line_start}` : "whole revision")))
-                .child(div().flex_1()).child(div().child(`${th.status}${th.stale ? " · stale" : ""}`))
-                .child(div().id(`cairn-thread-${th.id}-toggle`).flex_none().px(7).py(3).rounded(5).cursor_pointer().text_size(11).text_color(t.muted).hover((s) => s.bg(t.hover))
-                  .on_click((_e, cx) => cx.spawn(async (cx) => {
-                    this.writeErrorThread = th.id;
-                    await this.write([th.status === "open" ? "resolve" : "reopen", String(th.id)], this.view, cx);
-                  }))
-                  .child(th.status === "open" ? "Resolve" : "Reopen"))
-                .child(div().id(`cairn-thread-${th.id}-reply`).flex_none().px(7).py(3).rounded(5).cursor_pointer().text_size(11).text_color(t.muted).hover((s) => s.bg(t.hover))
-                  .on_click((_e, cx) => this.openComposer(["reply", th.id], (text, cx) => this.write(["add", this.view, text, "--reply", String(th.id)], this.view, cx), cx))
-                  .child("Reply")))
-              .child(div().text_size(12).child(th.body))
-              .children((th.replies ?? []).map((r) => div().pl(10).text_size(12).text_color(t.muted).child(`${r.author}: ${r.body}`)))
-              .when(this.writeErrorThread === th.id && Boolean(this.writeError), (e) => e.child(this.writeErrorLine(t)))
-              .when(this.isReplyTo(th), (e) => e.child(this.composerView(t))))))
+          .when(rest.length > 0, (e) => e.child(div().font_semibold().pt(6).border_t(1).border_color(t.border).child("Comments")))
+          .children(rest.map((th) => this.threadCard(th, t))))
         .child(Scrollbar.vertical("cairn-doc").absolute().inset_0()),
       ...(this.composer && !this.isReplyComposer() ? [div().flex_none().p(8).border_t(1).border_color(t.border).child(this.composerView(t))] : []),
     ];
