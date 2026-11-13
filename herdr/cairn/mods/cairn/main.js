@@ -189,6 +189,10 @@ export default class Cairn extends View {
     });
   }
 
+  // Reply composers target ["reply", threadRootId]; the Artifact-level one targets "revision".
+  isReplyComposer() { return Boolean(this.composer) && Array.isArray(this.composer.target) && this.composer.target[0] === "reply"; }
+  isReplyTo(th) { return this.isReplyComposer() && this.composer.target[1] === th.id; }
+
   composerView(t) {
     const text = this.input.value(), c = this.composer, canSend = !c.sending && text.trim().length > 0;
     const button = (id, label, primary, on) => h_flex().id(id).h(28).px(12).items_center().rounded(7)
@@ -380,12 +384,16 @@ export default class Cairn extends View {
                     this.writeErrorThread = th.id;
                     await this.write([th.status === "open" ? "resolve" : "reopen", String(th.id)], this.view, cx);
                   }))
-                  .child(th.status === "open" ? "Resolve" : "Reopen")))
+                  .child(th.status === "open" ? "Resolve" : "Reopen"))
+                .child(div().id(`cairn-thread-${th.id}-reply`).flex_none().px(7).py(3).rounded(5).cursor_pointer().text_size(11).text_color(t.muted).hover((s) => s.bg(t.hover))
+                  .on_click((_e, cx) => this.openComposer(["reply", th.id], (text, cx) => this.write(["add", this.view, text, "--reply", String(th.id)], this.view, cx), cx))
+                  .child("Reply")))
               .child(div().text_size(12).child(th.body))
               .children((th.replies ?? []).map((r) => div().pl(10).text_size(12).text_color(t.muted).child(`${r.author}: ${r.body}`)))
-              .when(this.writeErrorThread === th.id && Boolean(this.writeError), (e) => e.child(this.writeErrorLine(t))))))
+              .when(this.writeErrorThread === th.id && Boolean(this.writeError), (e) => e.child(this.writeErrorLine(t)))
+              .when(this.isReplyTo(th), (e) => e.child(this.composerView(t))))))
         .child(Scrollbar.vertical("cairn-doc").absolute().inset_0()),
-      ...(this.composer ? [div().flex_none().p(8).border_t(1).border_color(t.border).child(this.composerView(t))] : []),
+      ...(this.composer && !this.isReplyComposer() ? [div().flex_none().p(8).border_t(1).border_color(t.border).child(this.composerView(t))] : []),
     ];
   }
 
