@@ -84,7 +84,7 @@ function ago(iso) {
 export default class Cairn extends View {
   init(_props, cx) {
     this.items = []; this.seen = null; this.context = null; this.bin = null; this.parked = new Map();
-    this.view = null; this.detail = null; this.threads = []; this.error = null; this.loading = false;
+    this.view = null; this.detail = null; this.threads = []; this.error = null; this.writeError = null; this.loading = false;
     this.refresh(cx);
     cx.timer.every(POLL_MS, (cx) => this.refresh(cx));
   }
@@ -103,6 +103,32 @@ export default class Cairn extends View {
     }
     this.bin = null;
     throw new Error(`cairn not found (${last})`);
+  }
+
+  // Runs `cairn comment <args>` as the reviewer through the same path as reads (exec {cwd, on},
+  // so remote spaces work), then reloads the open Artifact at once instead of waiting for the poll.
+  // --author reviewer is explicit: it equals the role default, but a CAIRN_AGENT in herdr's
+  // environment (local or remote) would otherwise override it. Callers clear their own draft only
+  // when ok is true; on failure the cairn error text is in writeError for rendering under the composer.
+  async write(args, id, cx) {
+    const loc = location(), context = this.context;
+    this.writeError = null;
+    let out;
+    try {
+      out = JSON.parse(await this.cairn(["--json", "--role", "reviewer", "--author", "reviewer", "comment", ...args], loc));
+    } catch (e) {
+      const error = String(e.message ?? e);
+      this.writeError = error; cx.notify();
+      return { ok: false, error };
+    }
+    // The write landed; a failed reload only shows in the panel's error line.
+    try { await this.loadDetail(id, loc, context); } catch (e) { this.error = String(e.message ?? e); }
+    cx.notify();
+    return { ok: true, out };
+  }
+
+  writeErrorLine(t) {
+    return this.writeError ? div().text_xs().text_color("#e5484d").child(this.writeError) : null;
   }
 
   refresh(cx) {
@@ -211,7 +237,7 @@ export default class Cairn extends View {
   }
 
   open(id, cx) {
-    this.view = id; this.detail = null; this.threads = [];
+    this.view = id; this.detail = null; this.threads = []; this.writeError = null;
     const loc = location(), context = this.context;
     cx.spawn(async (cx) => {
       try { await this.loadDetail(id, loc, context); } catch (e) { this.error = String(e.message ?? e); }
