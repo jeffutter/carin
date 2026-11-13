@@ -1682,6 +1682,7 @@
         "required": [
           "path",
           "level",
+          "line",
           "bytes"
         ],
         "properties": {
@@ -1693,6 +1694,11 @@
           "level": {
             "type": "integer",
             "format": "int32",
+            "minimum": 0
+          },
+          "line": {
+            "type": "integer",
+            "description": "1-based line where the heading starts (the text line for a setext heading).",
             "minimum": 0
           },
           "path": {

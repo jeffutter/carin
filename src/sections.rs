@@ -100,6 +100,8 @@ fn split_query(query: &str) -> Vec<Vec<(char, bool)>> {
 pub struct OutlineEntry {
     pub path: String,
     pub level: u8,
+    /// 1-based line where the heading starts (the text line for a setext heading).
+    pub line: usize,
     /// Byte length of the Section, children included.
     pub bytes: usize,
 }
@@ -200,6 +202,7 @@ pub fn outline(src: &str) -> Outline {
             .map(|h| OutlineEntry {
                 path: h.display_path(),
                 level: h.level,
+                line: src[..h.start].bytes().filter(|&b| b == b'\n').count() + 1,
                 bytes: h.end - h.start,
             })
             .collect(),
@@ -364,6 +367,24 @@ mod tests {
 
     fn paths(src: &str) -> Vec<String> {
         outline(src).sections.into_iter().map(|e| e.path).collect()
+    }
+
+    #[test]
+    fn outline_lines_are_one_based_heading_starts() {
+        let src = "---\ntitle: x\n---\n# One\n\n2024 Plan\n=====\n\n```\n# not a heading\n```\n\n## After\n\n- # in list\n";
+        let got: Vec<(String, usize)> = outline(src)
+            .sections
+            .into_iter()
+            .map(|e| (e.path, e.line))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("One".to_string(), 4),
+                ("2024 Plan".to_string(), 6),
+                ("2024 Plan > After".to_string(), 13),
+            ]
+        );
     }
 
     // CRLF decision: pulldown-cmark offsets are byte offsets into the

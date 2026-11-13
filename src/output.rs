@@ -470,16 +470,19 @@ mod tests {
                 OutlineEntry {
                     path: "A".into(),
                     level: 1,
+                    line: 1,
                     bytes: 100,
                 },
                 OutlineEntry {
                     path: "A > B".into(),
                     level: 2,
+                    line: 2,
                     bytes: 40,
                 },
                 OutlineEntry {
                     path: "A > B > C".into(),
                     level: 3,
+                    line: 3,
                     bytes: 10,
                 },
             ],

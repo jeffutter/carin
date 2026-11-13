@@ -39,28 +39,6 @@ function flattenCssVars(svg) {
   return resolve(svg);
 }
 
-// Finds the heading lines of `md` and pairs them, in order, with the `cairn outline` entries
-// ({path, level}), returning [{line, path}] (1-based start line). The outline has no line
-// numbers, so headings are found by scanning (ATX and setext, skipping fenced code). If the scan
-// and the outline disagree in count or level, return [] (no buttons) rather than a wrong path.
-function markHeadings(md, sections) {
-  const lines = md.split("\n"), found = []; let fence = null;
-  for (let i = 0; i < lines.length; i++) {
-    const l = lines[i];
-    const f = /^ {0,3}(`{3,}|~{3,})/.exec(l);
-    if (fence) { if (f && f[1][0] === fence[0] && f[1].length >= fence.length && /^ {0,3}[`~]+\s*$/.test(l)) fence = null; continue; }
-    if (f) { fence = f[1]; continue; }
-    const atx = /^ {0,3}(#{1,6})(?:\s|$)/.exec(l);
-    if (atx) { found.push({ line: i + 1, level: atx[1].length }); continue; }
-    const under = /^ {0,3}(=+|-+)\s*$/.exec(lines[i + 1] ?? "");
-    if (under && /^ {0,3}[^\s>*+\-#`~\d]/.test(l)) {
-      found.push({ line: i + 1, level: under[1][0] === "=" ? 1 : 2 }); i++;
-    }
-  }
-  if (found.length !== sections.length || found.some((h, i) => h.level !== sections[i].level)) return [];
-  return found.map((h, i) => ({ line: h.line, path: sections[i].path }));
-}
-
 // Splits markdown into text, own-line embeds (the lines `cairn embeds` reports) and, when
 // `headings` is given, one text part per heading carrying {section: path}.
 // An embed sharing its line with other text stays in the text (herdr draws no inline images).
@@ -316,11 +294,21 @@ export default class Cairn extends View {
       if (item.kind === "diagram" && !detail.pic) detail.body = await this.cairn(["get", `${id}@${rev}`], loc).catch(() => null);
     } else if (item.kind === "markdown") {
       detail.body = await this.cairn(["get", `${id}@${rev}`], loc);
-      const { embeds } = JSON.parse(await this.cairn(["--json", "embeds", `${id}@${rev}`], loc));
-      // The outline only decorates: a failure leaves the page without Section buttons.
-      const sections = JSON.parse(await this.cairn(["--json", "outline", `${id}@${rev}`], loc).catch(() => '{"sections":[]}')).sections ?? [];
+      // The outline only decorates: a failure (or an older cairn without `line`) leaves the page
+      // without Section buttons and says so in the header line.
+      let notice = null;
+      const [embedsOut, sections] = await Promise.all([
+        this.cairn(["--json", "embeds", `${id}@${rev}`], loc),
+        this.cairn(["--json", "outline", `${id}@${rev}`], loc).then((o) => {
+          const list = JSON.parse(o).sections ?? [];
+          if (list.some((s) => !Number.isInteger(s.line))) { notice = "Section buttons need a newer cairn (outline has no line numbers)."; return []; }
+          return list;
+        }).catch((e) => { notice = `Section buttons unavailable: ${String(e?.message ?? e).split("\n")[0]}`; return []; }),
+      ]);
+      const { embeds } = JSON.parse(embedsOut);
+      if (notice) detail.notice = notice;
       detail.parts = [];
-      for (const p of splitAtEmbeds(detail.body, embeds, markHeadings(detail.body, sections))) {
+      for (const p of splitAtEmbeds(detail.body, embeds, sections.map((s) => ({ line: s.line, path: s.path })))) {
         const e = p.embed;
         // A dangling or unfetchable target gets a placeholder; it never fails the page.
         const pic = e && !e.dangling ? await this.fetchPic(e.target_id, e.target_revision, loc).catch(() => null) : null;
@@ -436,18 +424,19 @@ export default class Cairn extends View {
     return [
       this.header(t, item ? item.name : this.view, true).child(div().flex_none().text_size(11).text_color(t.dim).child(item ? `${item.kind} · r${item.latest_revision}` : ""))
         .when(Boolean(item), (e) => e.child(div().id("cairn-comment").flex_none().px(7).py(3).rounded(5).cursor_pointer().text_size(11).text_color(t.muted).hover((s) => s.bg(t.hover))
-          .on_click((_e, cx) => { const rev = item.latest_revision; this.openComposer("revision", (text, cx) => this.write(["add", `${item.id}@${rev}`, "--", text], item.id, cx), cx); }).child("Comment on this revision")))
-        .when(Boolean(item), (e) => e.child(div().id("cairn-browser").flex_none().px(7).py(3).rounded(5).cursor_pointer().text_size(11).text_color(t.muted).hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.openInBrowser(item.id, item.latest_revision, cx)).child("Open ↗"))),
+          .on_click((_e, cx) => { if (!d) return; this.openComposer("revision", (text, cx) => this.write(["add", `${item.id}@${d.rev}`, "--", text], item.id, cx), cx); }).child("Comment on this revision")))
+        .when(Boolean(item), (e) => e.child(div().id("cairn-browser").flex_none().px(7).py(3).rounded(5).cursor_pointer().text_size(11).text_color(t.muted).hover((s) => s.bg(t.hover)).on_click((_e, cx) => { if (d) this.openInBrowser(item.id, d.rev, cx); }).child("Open ↗"))),
       div().flex_1().min_h(0).relative()
         .child(v_flex().id("cairn-doc").absolute().inset_0().overflow_y_scroll().p(14).gap(12)
           .when(!d, (e) => e.child(div().text_color(t.dim).child(this.error || "Loading…")))
+          .when(Boolean(d?.notice), (e) => e.child(div().text_size(11).text_color(t.dim).child(d.notice)))
           .when(d && d.kind === "markdown", (e) => e.children((d.parts ?? []).map((p, i) => withThreads(i, p.embed
             ? (p.pic ? this.picElement(p.pic, t) : div().text_size(11).text_color(t.dim).child(`[embedded ${p.embed.target_id}${p.embed.dangling ? " (deleted)" : " cannot be shown here"}${p.embed.alt ? `: ${p.embed.alt}` : ""}]`))
             : p.section !== undefined
               ? h_flex().gap(6).items_start()
                 .child(div().flex_1().min_w(0).child(TextView.markdown(`cairn-md-${i}`, p.text).selectable()))
                 .when(Boolean(item), (e) => e.child(div().id(`cairn-sec-${i}`).flex_none().px(7).py(3).rounded(5).cursor_pointer().text_size(11).text_color(t.muted).hover((s) => s.bg(t.hover))
-                  .on_click((_e, cx) => { const rev = item.latest_revision; this.openComposer(["section", p.section], (text, cx) => this.write(["add", `${item.id}@${rev}`, "--section", p.section, "--", text], item.id, cx), cx); }).child("+")))
+                  .on_click((_e, cx) => { this.openComposer(["section", p.section], (text, cx) => this.write(["add", `${item.id}@${d.rev}`, "--section", p.section, "--", text], item.id, cx), cx); }).child("+")))
               : TextView.markdown(`cairn-md-${i}`, p.text).selectable()))))
           .when(d && d.pic, (e) => e.child(this.picElement(d.pic, t)))
           .when(d && d.kind === "diagram" && !d.pic, (e) => e.child(div().text_size(11).text_color(t.dim).child("Could not render this diagram; showing source.")).child(div().font_family(settings().font_family ?? "JetBrains Mono").text_size(11).child(d.body ?? "")))
