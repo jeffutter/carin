@@ -80,6 +80,21 @@ function placeThreads(threads, parts, rev) {
   return { byPart, rest };
 }
 
+// Turns the `comment list` promise into one that never rejects, so a failure while the rest
+// of loadDetail is still running cannot be an unhandled rejection.
+function settleComments(p) {
+  return Promise.resolve(p)
+    .then((o) => ({ threads: JSON.parse(o).threads ?? [] }))
+    .catch((e) => ({ threads: [], error: e }));
+}
+
+// A failed comment list leaves the page readable: empty Threads plus a header notice.
+function withComments(detail, settled) {
+  if (!settled.error) return { detail, threads: settled.threads };
+  const msg = `Comments unavailable: ${String(settled.error?.message ?? settled.error).split("\n")[0]}`;
+  return { detail: { ...detail, notice: detail.notice ? `${detail.notice} ${msg}` : msg }, threads: [] };
+}
+
 // Cairn review panel: lists the Artifacts registered for the active space's project
 // (cairn scopes by the cwd's git project), shows one, and opens itself when an Artifact
 // is new or has a new Revision.
@@ -286,7 +301,7 @@ export default class Cairn extends View {
     const item = this.items.find((a) => a.id === id);
     if (!item) return;
     const rev = item.latest_revision;
-    const comments = this.cairn(["--json", "comment", "list", id, "--all"], loc);
+    const comments = settleComments(this.cairn(["--json", "comment", "list", id, "--all"], loc));
     const detail = { id, rev, kind: item.kind, body: null, parts: null, pic: null };
     if (item.kind === "image" || item.kind === "diagram") {
       detail.pic = await this.fetchPic(id, rev, loc).catch(() => null);
@@ -317,10 +332,11 @@ export default class Cairn extends View {
     }
     // Await the Threads before the context check so detail and threads are assigned in one
     // synchronous step; a render between them would pair new parts with stale Threads.
-    const threads = JSON.parse(await comments).threads ?? [];
+    const settled = await comments;
     if (key() !== context || this.view !== id) return;
-    this.detail = detail;
-    this.threads = threads;
+    const merged = withComments(detail, settled);
+    this.detail = merged.detail;
+    this.threads = merged.threads;
   }
 
   // Returns { path, w, h } for an image or diagram (cairn renders Mermaid itself), cached per

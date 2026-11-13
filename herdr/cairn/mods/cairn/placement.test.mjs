@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 const src = readFileSync(new URL("./main.js", import.meta.url), "utf8");
 const from = src.indexOf("function splitAtEmbeds"), to = src.indexOf("// Cairn review panel");
 assert(from > 0 && to > from, "markers not found in main.js");
-const { splitAtEmbeds, placeThreads } = new Function(`${src.slice(from, to)}; return { splitAtEmbeds, placeThreads };`)();
+const { splitAtEmbeds, placeThreads, settleComments, withComments } = new Function(`${src.slice(from, to)}; return { splitAtEmbeds, placeThreads, settleComments, withComments };`)();
 
 // Mirrors loadDetail: embed parts keep their span and gain pic.
 const build = (md, embeds, heads) => splitAtEmbeds(md, embeds, heads).map((p) => (p.embed ? { ...p, pic: null } : p));
@@ -29,5 +29,17 @@ assert.equal(parts[at(r, "sec")].section, "A");
 
 r = placeThreads([th("old", { line_start: 3 }, 1), th("none", undefined)], parts, 2);
 assert.equal(r.byPart.size, 0); assert.equal(r.rest.length, 2);
+
+// A rejected comment list yields detail with empty threads and a notice, never a throw.
+{
+  const ok = await settleComments(Promise.resolve('{"threads":[{"id":"t"}]}'));
+  assert.deepEqual(withComments({ id: "a" }, ok), { detail: { id: "a" }, threads: [{ id: "t" }] });
+  const bad = await settleComments(Promise.reject(new Error("db busy\nmore")));
+  const m = withComments({ id: "a", notice: "N." }, bad);
+  assert.deepEqual(m.threads, []);
+  assert.equal(m.detail.notice, "N. Comments unavailable: db busy");
+  assert.equal(withComments({ id: "a" }, bad).detail.notice, "Comments unavailable: db busy");
+  assert.ok((await settleComments(Promise.resolve("not json"))).error, "bad JSON settles with an error");
+}
 
 console.log("placement ok");
