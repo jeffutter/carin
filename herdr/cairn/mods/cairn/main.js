@@ -195,14 +195,14 @@ export default class Cairn extends View {
     return v_flex().id("cairn-composer").track_focus(this.handle).flex_none().gap(6).p(8).rounded(7).border_1().border_color(t.border)
       .on_key_down((e, cx) => { if (e.key === "escape") { this.closeComposer({ discard: true }); cx.stop_propagation(); cx.notify(); } })
       .child(Input.new(this.input).h(32).px(10).rounded(7).border_1().border_color(this.inputFocused ? t.accent : t.input).bg(t.background).text_size(12.5).text_color(t.foreground))
-      .child(this.writeErrorThread === null ? this.writeErrorLine(t) : null)
+      .when(this.writeErrorThread === null && Boolean(this.writeError), (e) => e.child(this.writeErrorLine(t)))
       .child(h_flex().gap(8).justify_end()
         .child(button("cairn-composer-cancel", "Cancel", false, (cx) => { this.closeComposer({ discard: true }); cx.notify(); }))
         .child(button("cairn-composer-send", c.sending ? "Sending..." : "Send", true, canSend ? (cx) => this.sendComposer(cx) : null)));
   }
 
   writeErrorLine(t) {
-    return this.writeError ? div().text_xs().text_color("#e5484d").child(this.writeError) : null;
+    return div().text_xs().text_color("#e5484d").child(this.writeError ?? "");
   }
 
   refresh(cx) {
@@ -379,7 +379,7 @@ export default class Cairn extends View {
                   .child(th.status === "open" ? "Resolve" : "Reopen")))
               .child(div().text_size(12).child(th.body))
               .children((th.replies ?? []).map((r) => div().pl(10).text_size(12).text_color(t.muted).child(`${r.author}: ${r.body}`)))
-              .when(this.writeErrorThread === th.id, (e) => e.child(this.writeErrorLine(t))))))
+              .when(this.writeErrorThread === th.id && Boolean(this.writeError), (e) => e.child(this.writeErrorLine(t))))))
         .child(Scrollbar.vertical("cairn-doc").absolute().inset_0()),
       ...(this.composer ? [div().flex_none().p(8).border_t(1).border_color(t.border).child(this.composerView(t))] : []),
     ];
