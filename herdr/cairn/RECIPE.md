@@ -49,3 +49,4 @@ A panel in the layout's right column, sharing it with Files and Changes (a Cairn
 - A markdown Artifact with an own-line `![x](cairn:ID)` embed of an svg, a png and a mermaid diagram shows three pictures with readable labels.
 - "Open ↗" opens the browser when `cairn serve` runs, and shows the warning toast when it does not.
 - Clicking Resolve on an open Thread flips it to resolved and the panel reloads; Reopen flips it back; a failure shows an inline error on that card.
+- Clicking Comment in an open Artifact's header shows an inline composer. Typed text and caret survive over 6 s (two polls). Escape or Cancel discards the draft; opening another Artifact, going back, or switching space keeps it, and reopening the composer on the same Artifact restores it. A failed Send keeps the draft and shows the error under the box; a good Send posts a whole-revision Thread.

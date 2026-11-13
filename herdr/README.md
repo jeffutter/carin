@@ -8,7 +8,8 @@ A [Herdr](https://herdr.dev) mod: a side panel that follows the Artifacts cairn 
 
 ## What it needs
 
-- `cairn` (this repo's binary). The mod runs `cairn list`, `get`, `embeds`, `comment list`, `comment resolve|reopen` and `view` in the space's folder, so cairn's project scoping decides which Artifacts show. It needs the `embeds` command and `get --out` for diagrams, so use a cairn built from this repo at or after those commits.
+- `cairn` (this repo's binary). The mod runs `cairn list`, `get`, `embeds`, `comment list`, `comment add|resolve|reopen` and `view` in the space's folder, so cairn's project scoping decides which Artifacts show. It needs the `embeds` command and `get --out` for diagrams, so use a cairn built from this repo at or after those commits.
+- `mod.json` sets `"focusable": true` so `pane.go` can give the panel the keyboard for the inline comment composer.
 - A layout with a side panel: a stack with id `panel-body` inside a column with id `panel`, holding a block `{ "id": "cairn", "content": { "mod": "cairn" } }`. Herdr's `main` layout has the `panel` and `panel-body` nodes (Files and Changes). Add a `cairn` child to `panel-body`, and a tab-bar button that selects it:
 
   ```js

@@ -1,6 +1,6 @@
 import { View, div, image } from "gpui-kit";
-import { v_flex, h_flex, Scrollbar, TextView } from "gpui-base";
-import { spaces, panes, focused, exec, appHome, run, theme, settings, notify } from "herdr";
+import { v_flex, h_flex, Scrollbar, TextView, InputState, Input } from "gpui-base";
+import { spaces, panes, focused, exec, appHome, run, theme, settings, notify, nextCommand } from "herdr";
 import * as fs from "fs/promises";
 
 // herdr draws no http or data: images (TextView ignores them), only image(path) for a file
@@ -85,6 +85,27 @@ export default class Cairn extends View {
   init(_props, cx) {
     this.items = []; this.seen = null; this.context = null; this.bin = null; this.parked = new Map();
     this.view = null; this.detail = null; this.threads = []; this.error = null; this.writeError = null; this.writeErrorThread = null; this.loading = false;
+    // Composer: one retained InputState (created here, never in render). Polls and loadDetail
+    // never touch it, so an open draft keeps its text and focus. `drafts` maps draftKey() to
+    // text; the key includes the space context, so drafts are per space and outlive parking.
+    this.handle = cx.focus_handle(); this.input = InputState.new({ placeholder: "Write a comment..." });
+    this.composer = null; this.drafts = new Map(); this.inputFocused = false;
+    this.input.on("change", (_e, cx) => {
+      if (!this.composer) return;
+      const text = this.input.value();
+      if (text) this.drafts.set(this.composer.key, text); else this.drafts.delete(this.composer.key);
+      cx.notify();
+    });
+    this.input.on("submit", (_e, cx) => this.sendComposer(cx));
+    this.input.on("focus", (_e, cx) => { this.inputFocused = true; cx.notify(); });
+    this.input.on("blur", (_e, cx) => { this.inputFocused = false; cx.notify(); });
+    cx.spawn(async (cx) => {
+      for (;;) {
+        const c = await nextCommand();
+        if (c === "focus") { if (this.composer) this.input.focus(); else this.handle.focus(); }
+        cx.notify();
+      }
+    });
     this.refresh(cx);
     cx.timer.every(POLL_MS, (cx) => this.refresh(cx));
   }
@@ -127,6 +148,59 @@ export default class Cairn extends View {
     return { ok: true, out };
   }
 
+  draftKey(target) { return JSON.stringify([this.context, this.view, target]); }
+
+  // Opens the composer for `target` (any JSON-able value naming where the Comment goes, e.g.
+  // "revision"). onSend(text, cx) must resolve to write()'s {ok, error}; it is the only place
+  // that knows the cairn arguments. A draft saved for the same (space, Artifact, target) returns.
+  openComposer(target, onSend, cx) {
+    // composer is set before set_value so the change event files the text under the new key.
+    this.composer = { key: this.draftKey(target), target, onSend, sending: false };
+    this.input.set_value(this.drafts.get(this.composer.key) ?? "");
+    this.writeError = null; this.writeErrorThread = null;
+    this.input.focus(); cx.notify();
+  }
+
+  // Hides the composer. The draft stays in `drafts` unless discard (Escape, or a successful send).
+  closeComposer({ discard } = {}) {
+    if (!this.composer) return;
+    const { key } = this.composer;
+    this.composer = null;
+    if (discard) this.drafts.delete(key);
+    this.input.set_value("");
+    this.writeError = null;
+  }
+
+  async sendComposer(cx) {
+    const c = this.composer, text = this.input.value();
+    if (!c || c.sending || !text.trim()) return;
+    c.sending = true; this.writeErrorThread = null; cx.notify();
+    let r;
+    try { r = await c.onSend(text, cx); } catch (e) { r = { ok: false, error: String(e.message ?? e) }; this.writeError = r.error; }
+    c.sending = false;
+    if (r.ok) {
+      this.drafts.delete(c.key);
+      if (this.composer === c) this.closeComposer();
+    }
+    cx.notify();
+  }
+
+  composerView(t) {
+    const text = this.input.value(), c = this.composer, canSend = !c.sending && text.trim().length > 0;
+    const button = (id, label, primary, on) => h_flex().id(id).h(28).px(12).items_center().rounded(7)
+      .border_1().border_color(primary ? t.solid : t.input).bg(primary ? t.solid : t.raised)
+      .text_color(primary ? t.solid_foreground : t.foreground).text_size(12).font_medium()
+      .when(on, (e) => e.cursor_pointer().hover((s) => s.opacity(0.88)).on_click((_e, cx) => on(cx)))
+      .when(!on, (e) => e.opacity(0.5)).child(label);
+    return v_flex().id("cairn-composer").track_focus(this.handle).flex_none().gap(6).p(8).rounded(7).border_1().border_color(t.border)
+      .on_key_down((e, cx) => { if (e.key === "escape") { this.closeComposer({ discard: true }); cx.stop_propagation(); cx.notify(); } })
+      .child(Input.new(this.input).h(32).px(10).rounded(7).border_1().border_color(this.inputFocused ? t.accent : t.input).bg(t.background).text_size(12.5).text_color(t.foreground))
+      .child(this.writeErrorThread === null ? this.writeErrorLine(t) : null)
+      .child(h_flex().gap(8).justify_end()
+        .child(button("cairn-composer-cancel", "Cancel", false, (cx) => { this.closeComposer({ discard: true }); cx.notify(); }))
+        .child(button("cairn-composer-send", c.sending ? "Sending..." : "Send", true, canSend ? (cx) => this.sendComposer(cx) : null)));
+  }
+
   writeErrorLine(t) {
     return this.writeError ? div().text_xs().text_color("#e5484d").child(this.writeError) : null;
   }
@@ -140,6 +214,7 @@ export default class Cairn extends View {
       // so its existing Artifacts do not read as new.
       if (this.context !== null) this.parked.set(this.context, { seen: this.seen, items: this.items, view: this.view, detail: this.detail, threads: this.threads });
       const s = this.parked.get(context) ?? { seen: null, items: [], view: null, detail: null, threads: [] };
+      this.closeComposer();
       this.context = context; this.seen = s.seen; this.items = s.items; this.view = s.view; this.detail = s.detail; this.threads = s.threads;
     }
     if (!loc.cwd) return;
@@ -161,6 +236,7 @@ export default class Cairn extends View {
   }
 
   reveal(item, loc, context, cx) {
+    if (this.view !== item.id) this.closeComposer();
     this.view = item.id;
     run("layout.select", { stack: PANEL.stack, child: PANEL.child });
     run("layout.resize", { id: PANEL.id, weight: PANEL.weight });
@@ -237,6 +313,7 @@ export default class Cairn extends View {
   }
 
   open(id, cx) {
+    this.closeComposer();
     this.view = id; this.detail = null; this.threads = []; this.writeError = null;
     const loc = location(), context = this.context;
     cx.spawn(async (cx) => {
@@ -248,7 +325,7 @@ export default class Cairn extends View {
 
   header(t, title, back) {
     return h_flex().h(42).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
-      .when(back, (e) => e.child(div().id("cairn-back").px(6).py(2).rounded(5).cursor_pointer().text_color(t.muted).hover((s) => s.bg(t.hover)).on_click((_e, cx) => { this.view = null; this.detail = null; cx.notify(); }).child("←")))
+      .when(back, (e) => e.child(div().id("cairn-back").px(6).py(2).rounded(5).cursor_pointer().text_color(t.muted).hover((s) => s.bg(t.hover)).on_click((_e, cx) => { this.closeComposer(); this.view = null; this.detail = null; cx.notify(); }).child("←")))
       .child(div().font_semibold().flex_1().min_w(0).truncate().child(title));
   }
 
@@ -275,6 +352,8 @@ export default class Cairn extends View {
     const threads = this.threads;
     return [
       this.header(t, item ? item.name : this.view, true).child(div().text_size(11).text_color(t.dim).child(item ? `${item.kind} · r${item.latest_revision}` : ""))
+        .when(Boolean(item), (e) => e.child(div().id("cairn-comment").flex_none().px(7).py(3).rounded(5).cursor_pointer().text_size(11).text_color(t.muted).hover((s) => s.bg(t.hover))
+          .on_click((_e, cx) => this.openComposer("revision", (text, cx) => this.write(["add", item.id, text], item.id, cx), cx)).child("Comment")))
         .when(Boolean(item), (e) => e.child(div().id("cairn-browser").flex_none().px(7).py(3).rounded(5).cursor_pointer().text_size(11).text_color(t.muted).hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.openInBrowser(item.id, item.latest_revision, cx)).child("Open ↗"))),
       div().flex_1().min_h(0).relative()
         .child(v_flex().id("cairn-doc").absolute().inset_0().overflow_y_scroll().p(14).gap(12)
@@ -302,6 +381,7 @@ export default class Cairn extends View {
               .children((th.replies ?? []).map((r) => div().pl(10).text_size(12).text_color(t.muted).child(`${r.author}: ${r.body}`)))
               .when(this.writeErrorThread === th.id, (e) => e.child(this.writeErrorLine(t))))))
         .child(Scrollbar.vertical("cairn-doc").absolute().inset_0()),
+      ...(this.composer ? [div().flex_none().p(8).border_t(1).border_color(t.border).child(this.composerView(t))] : []),
     ];
   }
 
