@@ -171,18 +171,22 @@ export default class Cairn extends View {
     this.writeError = null;
   }
 
-  async sendComposer(cx) {
+  // Called from a click callback, whose cx is invalid after the first await: the async work runs
+  // in cx.spawn and uses the cx it is handed.
+  sendComposer(cx) {
     const c = this.composer, text = this.input.value();
     if (!c || c.sending || !text.trim()) return;
     c.sending = true; this.writeErrorThread = null; cx.notify();
-    let r;
-    try { r = await c.onSend(text, cx); } catch (e) { r = { ok: false, error: String(e.message ?? e) }; this.writeError = r.error; }
-    c.sending = false;
-    if (r.ok) {
-      this.drafts.delete(c.key);
-      if (this.composer === c) this.closeComposer();
-    }
-    cx.notify();
+    cx.spawn(async (cx) => {
+      let r;
+      try { r = await c.onSend(text, cx); } catch (e) { r = { ok: false, error: String(e.message ?? e) }; this.writeError = r.error; }
+      c.sending = false;
+      if (r.ok) {
+        this.drafts.delete(c.key);
+        if (this.composer === c) this.closeComposer();
+      }
+      cx.notify();
+    });
   }
 
   composerView(t) {
