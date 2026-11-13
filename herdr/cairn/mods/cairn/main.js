@@ -312,12 +312,15 @@ export default class Cairn extends View {
         const e = p.embed;
         // A dangling or unfetchable target gets a placeholder; it never fails the page.
         const pic = e && !e.dangling ? await this.fetchPic(e.target_id, e.target_revision, loc).catch(() => null) : null;
-        detail.parts.push(e ? { embed: e, pic } : p);
+        detail.parts.push(e ? { ...p, pic } : p);
       }
     }
+    // Await the Threads before the context check so detail and threads are assigned in one
+    // synchronous step; a render between them would pair new parts with stale Threads.
+    const threads = JSON.parse(await comments).threads ?? [];
     if (key() !== context || this.view !== id) return;
     this.detail = detail;
-    this.threads = JSON.parse(await comments).threads ?? [];
+    this.threads = threads;
   }
 
   // Returns { path, w, h } for an image or diagram (cairn renders Mermaid itself), cached per
