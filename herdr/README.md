@@ -8,7 +8,7 @@ A [Herdr](https://herdr.dev) mod: a side panel that follows the Artifacts cairn 
 
 ## What it needs
 
-- `cairn` (this repo's binary). The mod runs `cairn list`, `get`, `embeds`, `comment list` and `view` in the space's folder, so cairn's project scoping decides which Artifacts show. It needs the `embeds` command and `get --out` for diagrams, so use a cairn built from this repo at or after those commits.
+- `cairn` (this repo's binary). The mod runs `cairn list`, `get`, `embeds`, `comment list`, `comment resolve|reopen` and `view` in the space's folder, so cairn's project scoping decides which Artifacts show. It needs the `embeds` command and `get --out` for diagrams, so use a cairn built from this repo at or after those commits.
 - A layout with a side panel: a stack with id `panel-body` inside a column with id `panel`, holding a block `{ "id": "cairn", "content": { "mod": "cairn" } }`. Herdr's `main` layout has the `panel` and `panel-body` nodes (Files and Changes). Add a `cairn` child to `panel-body`, and a tab-bar button that selects it:
 
   ```js
@@ -44,4 +44,6 @@ Link the folder per file (`recursive = true`) so Herdr can write its own files b
 - Header: back to the list, and **Open** to view the Artifact in the web UI (it says so if `cairn serve` is not running).
 - html bundles are not drawn: Herdr has no web view. The panel says so, and Open shows them.
 
-The mod only reads cairn. Images and diagrams are fetched into `~/.config/herdr-app/data/cairn-cache/<id>@<rev>/` once per Revision.
+- Each comment Thread card has a **Resolve** button (open Threads) or **Reopen** button (resolved Threads), stale Threads included. It runs `cairn comment resolve|reopen` as the reviewer, reloads the Artifact at once, and shows a failure as an inline error on that card.
+
+The mod writes to cairn only through those reviewer comment actions. Images and diagrams are fetched into `~/.config/herdr-app/data/cairn-cache/<id>@<rev>/` once per Revision.

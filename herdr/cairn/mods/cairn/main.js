@@ -84,7 +84,7 @@ function ago(iso) {
 export default class Cairn extends View {
   init(_props, cx) {
     this.items = []; this.seen = null; this.context = null; this.bin = null; this.parked = new Map();
-    this.view = null; this.detail = null; this.threads = []; this.error = null; this.writeError = null; this.loading = false;
+    this.view = null; this.detail = null; this.threads = []; this.error = null; this.writeError = null; this.writeErrorThread = null; this.loading = false;
     this.refresh(cx);
     cx.timer.every(POLL_MS, (cx) => this.refresh(cx));
   }
@@ -291,9 +291,16 @@ export default class Cairn extends View {
             v_flex().gap(4).p(8).rounded(7).border_1().border_color(th.status === "open" ? t.blocked : t.border)
               .child(h_flex().gap(6).text_size(11).text_color(t.dim)
                 .child(div().child(th.author)).child(div().child(th.locator?.section_path ?? (th.locator?.line_start ? `line ${th.locator.line_start}` : "whole revision")))
-                .child(div().flex_1()).child(div().child(`${th.status}${th.stale ? " · stale" : ""}`)))
+                .child(div().flex_1()).child(div().child(`${th.status}${th.stale ? " · stale" : ""}`))
+                .child(div().id(`cairn-thread-${th.id}-toggle`).flex_none().px(7).py(3).rounded(5).cursor_pointer().text_size(11).text_color(t.muted).hover((s) => s.bg(t.hover))
+                  .on_click((_e, cx) => cx.spawn(async (cx) => {
+                    this.writeErrorThread = th.id;
+                    await this.write([th.status === "open" ? "resolve" : "reopen", String(th.id)], this.view, cx);
+                  }))
+                  .child(th.status === "open" ? "Resolve" : "Reopen")))
               .child(div().text_size(12).child(th.body))
-              .children((th.replies ?? []).map((r) => div().pl(10).text_size(12).text_color(t.muted).child(`${r.author}: ${r.body}`))))))
+              .children((th.replies ?? []).map((r) => div().pl(10).text_size(12).text_color(t.muted).child(`${r.author}: ${r.body}`)))
+              .when(this.writeErrorThread === th.id, (e) => e.child(this.writeErrorLine(t))))))
         .child(Scrollbar.vertical("cairn-doc").absolute().inset_0()),
     ];
   }
