@@ -39,8 +39,42 @@ function flattenCssVars(svg) {
   return resolve(svg);
 }
 
-// Splits markdown into text, own-line embeds (the lines `cairn embeds` reports) and, when
-// `headings` is given, one text part per heading carrying {section: path}.
+// Splits lines[from, to) into Blocks {text, start, end} (1-based, inclusive, blank lines excluded):
+// a fenced code block (blank lines inside stay), a heading line, a list (items, indented or lazy
+// continuation lines, blank lines followed by another item or indented line), or a paragraph
+// (tables included). A small line scanner: the mod imports no markdown parser. Where unsure, a
+// block grows rather than splits.
+function blocksOf(lines, from, to) {
+  const out = [], blank = (l) => /^\s*$/.test(l), fence = (l) => /^ {0,3}(`{3,}|~{3,})/.exec(l),
+    head = (l) => /^ {0,3}#{1,6}(\s|$)/.test(l), item = (l) => /^\s*([-*+]|\d+[.)])\s/.test(l), indented = (l) => /^\s+\S/.test(l);
+  const push = (a, b) => out.push({ text: lines.slice(a, b + 1).join("\n"), start: a + 1, end: b + 1 });
+  let i = from;
+  while (i < to) {
+    const l = lines[i];
+    if (blank(l)) { i++; continue; }
+    let j = i;
+    const f = fence(l);
+    if (f) {
+      while (j + 1 < to && !(lines[j + 1].trim().startsWith(f[1][0].repeat(f[1].length)) && /^ {0,3}(`+|~+)\s*$/.test(lines[j + 1]))) j++;
+      if (j + 1 < to) j++;
+    } else if (head(l)) {
+    } else if (item(l)) {
+      while (j + 1 < to) {
+        const n = lines[j + 1];
+        if (!blank(n)) { if (head(n) || fence(n)) break; j++; continue; }
+        let k = j + 1; while (k < to && blank(lines[k])) k++;
+        if (k < to && (item(lines[k]) || indented(lines[k]))) j = k; else break;
+      }
+    } else {
+      while (j + 1 < to && !blank(lines[j + 1]) && !head(lines[j + 1]) && !fence(lines[j + 1])) j++;
+    }
+    push(i, j); i = j + 1;
+  }
+  return out;
+}
+
+// Splits markdown into Block text parts, own-line embeds (the lines `cairn embeds` reports) and, when
+// `headings` is given, the heading's own Block carries {section: path}. Every text part has its exact start/end lines.
 // An embed sharing its line with other text stays in the text (herdr draws no inline images).
 function splitAtEmbeds(md, embeds, headings = []) {
   const lines = md.split("\n"), parts = []; let from = 0, section = null;
@@ -48,7 +82,10 @@ function splitAtEmbeds(md, embeds, headings = []) {
     ...embeds.filter((e) => /^\s*!\[[^\]]*\]\(cairn:[^)]*\)\s*$/.test(lines[e.line - 1] ?? "")).map((e) => ({ line: e.line, embed: e })),
     ...headings.map((h) => ({ line: h.line, path: h.path })),
   ].sort((a, b) => a.line - b.line);
-  const flush = (to) => { if (to > from) parts.push({ text: lines.slice(from, to).join("\n"), start: from + 1, end: to, ...(section === null ? {} : { section }) }); section = null; };
+  const flush = (to) => {
+    if (to > from) blocksOf(lines, from, to).forEach((b, k) => parts.push({ ...b, ...(k === 0 && section !== null ? { section } : {}) }));
+    section = null;
+  };
   for (const ev of events) {
     flush(ev.line - 1);
     if (ev.embed) { parts.push({ embed: ev.embed, start: ev.line, end: ev.line }); from = ev.line; }
@@ -61,8 +98,7 @@ function splitAtEmbeds(md, embeds, headings = []) {
 // Splits Threads into those drawn right after a markdown part and the rest (drawn at the bottom).
 // Only Threads on the displayed Revision `rev` are placed, since a Thread's section path and
 // lines are resolved against its own Revision. A section path goes under the part carrying that
-// section; otherwise a line goes under the part whose span holds it (the last part if past the
-// end). No locator, no matching section, or a non-markdown Artifact: `rest`. Order is preserved.
+// section; otherwise a line goes under the part whose span holds it (the last part ending before it if in a gap or past the end). No locator, no matching section, or a non-markdown Artifact: `rest`. Order is preserved.
 function placeThreads(threads, parts, rev) {
   const byPart = new Map(), rest = [];
   for (const th of threads) {
@@ -72,7 +108,8 @@ function placeThreads(threads, parts, rev) {
       if (loc.section_path) at = parts.findIndex((p) => p.section === loc.section_path);
       else if (loc.line_start) {
         at = parts.findIndex((p) => p.start !== undefined && loc.line_start >= p.start && loc.line_start <= p.end);
-        if (at < 0 && loc.line_start > parts[parts.length - 1].end) at = parts.length - 1;
+        // A line between Blocks (blank) or past the end goes under the last part ending before it.
+        if (at < 0) { const k = parts.findLastIndex((p) => p.end !== undefined && p.end < loc.line_start); at = k < 0 ? 0 : k; }
       }
     }
     if (at < 0) rest.push(th); else byPart.set(at, [...(byPart.get(at) ?? []), th]);
@@ -451,12 +488,14 @@ export default class Cairn extends View {
           .when(Boolean(d?.notice), (e) => e.child(div().text_size(11).text_color(t.dim).child(d.notice)))
           .when(d && d.kind === "markdown", (e) => e.children((d.parts ?? []).map((p, i) => withThreads(i, p.embed
             ? (p.pic ? this.picElement(p.pic, t) : div().text_size(11).text_color(t.dim).child(`[embedded ${p.embed.target_id}${p.embed.dangling ? " (deleted)" : " cannot be shown here"}${p.embed.alt ? `: ${p.embed.alt}` : ""}]`))
-            : p.section !== undefined
-              ? h_flex().gap(6).items_start()
+            : h_flex().gap(6).items_start()
                 .child(div().flex_1().min_w(0).child(TextView.markdown(`cairn-md-${i}`, p.text).selectable()))
-                .when(Boolean(item), (e) => e.child(div().id(`cairn-sec-${i}`).flex_none().px(7).py(3).rounded(5).cursor_pointer().text_size(11).text_color(t.muted).hover((s) => s.bg(t.hover))
-                  .on_click((_e, cx) => { this.openComposer(["section", p.section], (text, cx) => this.write(["add", `${item.id}@${d.rev}`, "--section", p.section, "--", text], item.id, cx), cx); }).child("+")))
-              : TextView.markdown(`cairn-md-${i}`, p.text).selectable()))))
+                .when(Boolean(item), (e) => e.child(div().id(`cairn-blk-${i}`).flex_none().px(7).py(3).rounded(5).cursor_pointer().text_size(11).text_color(t.muted).hover((s) => s.bg(t.hover))
+                  .on_click((_e, cx) => {
+                    if (p.section !== undefined) { this.openComposer(["section", p.section], (text, cx) => this.write(["add", `${item.id}@${d.rev}`, "--section", p.section, "--", text], item.id, cx), cx); return; }
+                    const range = p.start === p.end ? String(p.start) : `${p.start}-${p.end}`;
+                    this.openComposer(["lines", d.rev, p.start, p.end], (text, cx) => this.write(["add", `${item.id}@${d.rev}`, "--lines", range, "--", text], item.id, cx), cx);
+                  }).child("+")))))))
           .when(d && d.pic, (e) => e.child(this.picElement(d.pic, t)))
           .when(d && d.kind === "diagram" && !d.pic, (e) => e.child(div().text_size(11).text_color(t.dim).child("Could not render this diagram; showing source.")).child(div().font_family(settings().font_family ?? "JetBrains Mono").text_size(11).child(d.body ?? "")))
           .when(d && d.kind === "image" && !d.pic, (e) => e.child(div().text_color(t.dim).child("Cannot show this image here.")))

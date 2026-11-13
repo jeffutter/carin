@@ -4,9 +4,9 @@ import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 
 const src = readFileSync(new URL("./main.js", import.meta.url), "utf8");
-const from = src.indexOf("function splitAtEmbeds"), to = src.indexOf("// Cairn review panel");
+const from = src.indexOf("function blocksOf"), to = src.indexOf("// Cairn review panel");
 assert(from > 0 && to > from, "markers not found in main.js");
-const { splitAtEmbeds, placeThreads, settleComments, withComments } = new Function(`${src.slice(from, to)}; return { splitAtEmbeds, placeThreads, settleComments, withComments };`)();
+const { blocksOf, splitAtEmbeds, placeThreads, settleComments, withComments } = new Function(`${src.slice(from, to)}; return { blocksOf, splitAtEmbeds, placeThreads, settleComments, withComments };`)();
 
 // Mirrors loadDetail: embed parts keep their span and gain pic.
 const build = (md, embeds, heads) => splitAtEmbeds(md, embeds, heads).map((p) => (p.embed ? { ...p, pic: null } : p));
@@ -29,6 +29,32 @@ assert.equal(parts[at(r, "sec")].section, "A");
 
 r = placeThreads([th("old", { line_start: 3 }, 1), th("none", undefined)], parts, 2);
 assert.equal(r.byPart.size, 0); assert.equal(r.rest.length, 2);
+
+
+// Block splitting: each text part is one Block with its exact lines; headings keep the section.
+{
+  const span = (ps) => ps.map((p) => (p.embed ? ["embed", p.start] : [p.start, p.end]));
+  let ps = splitAtEmbeds("one\ntwo\n\nthree", [], []);
+  assert.deepEqual(span(ps), [[1, 2], [4, 4]]); assert.equal(ps[0].text, "one\ntwo");
+
+  ps = splitAtEmbeds(["para", "", "```js", "a", "", "b", "```", "", "tail"].join("\n"), [], []);
+  assert.deepEqual(span(ps), [[1, 1], [3, 7], [9, 9]]);
+
+  ps = splitAtEmbeds(["- a", "", "- b", "  more", "", "after"].join("\n"), [], []);
+  assert.deepEqual(span(ps), [[1, 4], [6, 6]]);
+
+  ps = splitAtEmbeds(["# A", "intro", "", "body", "## B", "x"].join("\n"), [], [{ line: 1, path: "A" }, { line: 5, path: "A/B" }]);
+  assert.deepEqual(span(ps), [[1, 1], [2, 2], [4, 4], [5, 5], [6, 6]]);
+  assert.deepEqual(ps.map((p) => p.section), ["A", undefined, undefined, "A/B", undefined]);
+
+  ps = splitAtEmbeds(["a", "", "![x](cairn:art1)", "", "b"].join("\n"), [{ line: 3 }], []);
+  assert.deepEqual(span(ps), [[1, 1], ["embed", 3], [5, 5]]);
+
+  // A line Thread lands under its Block; a gap (blank) line under the preceding Block.
+  ps = splitAtEmbeds("one\ntwo\n\nthree", [], []);
+  r = placeThreads([th("in", { line_start: 2 }), th("gap", { line_start: 3 })], ps, 2);
+  assert.equal(at(r, "in"), 0); assert.equal(at(r, "gap"), 0); assert.equal(r.rest.length, 0);
+}
 
 // A rejected comment list yields detail with empty threads and a notice, never a throw.
 {
