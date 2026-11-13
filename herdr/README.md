@@ -8,7 +8,7 @@ A [Herdr](https://herdr.dev) mod: a side panel that follows the Artifacts cairn 
 
 ## What it needs
 
-- `cairn` (this repo's binary). The mod runs `cairn list`, `get`, `embeds`, `comment list`, `comment add` (with `ID@REV` and `--reply`), `comment resolve|reopen` and `view` in the space's folder, so cairn's project scoping decides which Artifacts show. It needs the `embeds` command and `get --out` for diagrams, so use a cairn built from this repo at or after those commits.
+- `cairn` (this repo's binary). The mod runs `cairn list`, `get`, `embeds`, `outline`, `comment list`, `comment add` (with `ID@REV` and `--reply`), `comment resolve|reopen` and `view` in the space's folder, so cairn's project scoping decides which Artifacts show. It needs the `embeds` command and `get --out` for diagrams, so use a cairn built from this repo at or after those commits.
 - `mod.json` sets `"focusable": true` so `pane.go` can give the panel the keyboard for the inline comment composer.
 - A layout with a side panel: a stack with id `panel-body` inside a column with id `panel`, holding a block `{ "id": "cairn", "content": { "mod": "cairn" } }`. Herdr's `main` layout has the `panel` and `panel-body` nodes (Files and Changes). Add a `cairn` child to `panel-body`, and a tab-bar button that selects it:
 
@@ -48,5 +48,6 @@ Link the folder per file (`recursive = true`) so Herdr can write its own files b
 - Each comment Thread card has a **Resolve** button (open Threads) or **Reopen** button (resolved Threads), stale Threads included. It runs `cairn comment resolve|reopen` as the reviewer, reloads the Artifact at once, and shows a failure as an inline error on that card.
 - Each Thread card also has a **Reply** button, on open, resolved and stale Threads alike. It opens the inline composer under that Thread and Send runs `cairn comment add ID BODY --reply THREAD_ID` as the reviewer; the panel reloads and shows the reply at once. Reply drafts are kept per space, Artifact and Thread.
 - Every Artifact of every Kind (markdown, image, diagram, html) has a **Comment on this revision** header button. It opens the inline composer and Send runs `cairn comment add ID@REV BODY` as the reviewer on the latest Revision, with no locator; the panel reloads and shows the whole-revision Thread at once.
+- Each heading of a markdown Artifact has a **+** button on its right. It opens the inline composer for that Section (one draft per Section) and Send runs `cairn comment add ID@REV BODY --section "A > B"` on the latest Revision. Section paths come from `cairn --json outline ID@REV`, paired in order with the headings found in the source; if the two disagree the page shows no buttons.
 
 The mod writes to cairn only through those reviewer comment actions. Images and diagrams are fetched into `~/.config/herdr-app/data/cairn-cache/<id>@<rev>/` once per Revision.

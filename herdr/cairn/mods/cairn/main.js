@@ -39,16 +39,44 @@ function flattenCssVars(svg) {
   return resolve(svg);
 }
 
-// Splits markdown into text and own-line embeds using the lines `cairn embeds` reports.
-// An embed sharing its line with other text stays in the text (herdr draws no inline images).
-function splitAtEmbeds(md, embeds) {
-  const lines = md.split("\n"), parts = []; let from = 0;
-  for (const e of embeds) {
-    if (!/^\s*!\[[^\]]*\]\(cairn:[^)]*\)\s*$/.test(lines[e.line - 1] ?? "")) continue;
-    if (e.line - 1 > from) parts.push({ text: lines.slice(from, e.line - 1).join("\n") });
-    parts.push({ embed: e }); from = e.line;
+// Finds the heading lines of `md` and pairs them, in order, with the `cairn outline` entries
+// ({path, level}), returning [{line, path}] (1-based start line). The outline has no line
+// numbers, so headings are found by scanning (ATX and setext, skipping fenced code). If the scan
+// and the outline disagree in count or level, return [] (no buttons) rather than a wrong path.
+function markHeadings(md, sections) {
+  const lines = md.split("\n"), found = []; let fence = null;
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    const f = /^ {0,3}(`{3,}|~{3,})/.exec(l);
+    if (fence) { if (f && f[1][0] === fence[0] && f[1].length >= fence.length && /^ {0,3}[`~]+\s*$/.test(l)) fence = null; continue; }
+    if (f) { fence = f[1]; continue; }
+    const atx = /^ {0,3}(#{1,6})(?:\s|$)/.exec(l);
+    if (atx) { found.push({ line: i + 1, level: atx[1].length }); continue; }
+    const under = /^ {0,3}(=+|-+)\s*$/.exec(lines[i + 1] ?? "");
+    if (under && /^ {0,3}[^\s>*+\-#`~\d]/.test(l)) {
+      found.push({ line: i + 1, level: under[1][0] === "=" ? 1 : 2 }); i++;
+    }
   }
-  if (from < lines.length) parts.push({ text: lines.slice(from).join("\n") });
+  if (found.length !== sections.length || found.some((h, i) => h.level !== sections[i].level)) return [];
+  return found.map((h, i) => ({ line: h.line, path: sections[i].path }));
+}
+
+// Splits markdown into text, own-line embeds (the lines `cairn embeds` reports) and, when
+// `headings` is given, one text part per heading carrying {section: path}.
+// An embed sharing its line with other text stays in the text (herdr draws no inline images).
+function splitAtEmbeds(md, embeds, headings = []) {
+  const lines = md.split("\n"), parts = []; let from = 0, section = null;
+  const events = [
+    ...embeds.filter((e) => /^\s*!\[[^\]]*\]\(cairn:[^)]*\)\s*$/.test(lines[e.line - 1] ?? "")).map((e) => ({ line: e.line, embed: e })),
+    ...headings.map((h) => ({ line: h.line, path: h.path })),
+  ].sort((a, b) => a.line - b.line);
+  const flush = (to) => { if (to > from) parts.push(section === null ? { text: lines.slice(from, to).join("\n") } : { text: lines.slice(from, to).join("\n"), section }); section = null; };
+  for (const ev of events) {
+    flush(ev.line - 1);
+    if (ev.embed) { parts.push({ embed: ev.embed }); from = ev.line; }
+    else { from = ev.line - 1; section = ev.path; }
+  }
+  flush(lines.length);
   return parts;
 }
 
@@ -265,8 +293,10 @@ export default class Cairn extends View {
     } else if (item.kind === "markdown") {
       detail.body = await this.cairn(["get", `${id}@${rev}`], loc);
       const { embeds } = JSON.parse(await this.cairn(["--json", "embeds", `${id}@${rev}`], loc));
+      // The outline only decorates: a failure leaves the page without Section buttons.
+      const sections = JSON.parse(await this.cairn(["--json", "outline", `${id}@${rev}`], loc).catch(() => '{"sections":[]}')).sections ?? [];
       detail.parts = [];
-      for (const p of splitAtEmbeds(detail.body, embeds)) {
+      for (const p of splitAtEmbeds(detail.body, embeds, markHeadings(detail.body, sections))) {
         const e = p.embed;
         // A dangling or unfetchable target gets a placeholder; it never fails the page.
         const pic = e && !e.dangling ? await this.fetchPic(e.target_id, e.target_revision, loc).catch(() => null) : null;
@@ -368,7 +398,12 @@ export default class Cairn extends View {
           .when(!d, (e) => e.child(div().text_color(t.dim).child(this.error || "Loading…")))
           .when(d && d.kind === "markdown", (e) => e.children((d.parts ?? []).map((p, i) => p.embed
             ? (p.pic ? this.picElement(p.pic, t) : div().text_size(11).text_color(t.dim).child(`[embedded ${p.embed.target_id}${p.embed.dangling ? " (deleted)" : " cannot be shown here"}${p.embed.alt ? `: ${p.embed.alt}` : ""}]`))
-            : TextView.markdown(`cairn-md-${i}`, p.text).selectable())))
+            : p.section !== undefined
+              ? h_flex().gap(6).items_start()
+                .child(div().flex_1().min_w(0).child(TextView.markdown(`cairn-md-${i}`, p.text).selectable()))
+                .when(Boolean(item), (e) => e.child(div().id(`cairn-sec-${i}`).flex_none().px(7).py(3).rounded(5).cursor_pointer().text_size(11).text_color(t.muted).hover((s) => s.bg(t.hover))
+                  .on_click((_e, cx) => { const rev = item.latest_revision; this.openComposer(["section", p.section], (text, cx) => this.write(["add", `${item.id}@${rev}`, text, "--section", p.section], item.id, cx), cx); }).child("+")))
+              : TextView.markdown(`cairn-md-${i}`, p.text).selectable())))
           .when(d && d.pic, (e) => e.child(this.picElement(d.pic, t)))
           .when(d && d.kind === "diagram" && !d.pic, (e) => e.child(div().text_size(11).text_color(t.dim).child("Could not render this diagram; showing source.")).child(div().font_family(settings().font_family ?? "JetBrains Mono").text_size(11).child(d.body ?? "")))
           .when(d && d.kind === "image" && !d.pic, (e) => e.child(div().text_color(t.dim).child("Cannot show this image here.")))
