@@ -359,9 +359,9 @@ export default class Cairn extends View {
     const d = this.detail;
     const threads = this.threads;
     return [
-      this.header(t, item ? item.name : this.view, true).child(div().text_size(11).text_color(t.dim).child(item ? `${item.kind} · r${item.latest_revision}` : ""))
+      this.header(t, item ? item.name : this.view, true).child(div().flex_none().text_size(11).text_color(t.dim).child(item ? `${item.kind} · r${item.latest_revision}` : ""))
         .when(Boolean(item), (e) => e.child(div().id("cairn-comment").flex_none().px(7).py(3).rounded(5).cursor_pointer().text_size(11).text_color(t.muted).hover((s) => s.bg(t.hover))
-          .on_click((_e, cx) => this.openComposer("revision", (text, cx) => this.write(["add", item.id, text], item.id, cx), cx)).child("Comment")))
+          .on_click((_e, cx) => { const rev = item.latest_revision; this.openComposer("revision", (text, cx) => this.write(["add", `${item.id}@${rev}`, text], item.id, cx), cx); }).child("Comment on this revision")))
         .when(Boolean(item), (e) => e.child(div().id("cairn-browser").flex_none().px(7).py(3).rounded(5).cursor_pointer().text_size(11).text_color(t.muted).hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.openInBrowser(item.id, item.latest_revision, cx)).child("Open ↗"))),
       div().flex_1().min_h(0).relative()
         .child(v_flex().id("cairn-doc").absolute().inset_0().overflow_y_scroll().p(14).gap(12)
