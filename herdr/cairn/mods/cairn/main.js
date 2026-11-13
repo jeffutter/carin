@@ -226,6 +226,8 @@ export default class Cairn extends View {
   sendComposer(cx) {
     const c = this.composer, text = this.input.value();
     if (!c || c.sending || !text.trim()) return;
+    // cairn reads a body of exactly "-" from stdin even after "--", so it cannot be stored.
+    if (text.trim() === "-") { this.writeError = 'A comment of just "-" cannot be sent; add more text.'; this.writeErrorThread = null; cx.notify(); return; }
     c.sending = true; this.writeErrorThread = null; cx.notify();
     cx.spawn(async (cx) => {
       let r;
@@ -418,7 +420,7 @@ export default class Cairn extends View {
           }))
           .child(th.status === "open" ? "Resolve" : "Reopen"))
         .child(div().id(`cairn-thread-${th.id}-reply`).flex_none().px(7).py(3).rounded(5).cursor_pointer().text_size(11).text_color(t.muted).hover((s) => s.bg(t.hover))
-          .on_click((_e, cx) => this.openComposer(["reply", th.id], (text, cx) => this.write(["add", this.view, text, "--reply", String(th.id)], this.view, cx), cx))
+          .on_click((_e, cx) => this.openComposer(["reply", th.id], (text, cx) => this.write(["add", this.view, "--reply", String(th.id), "--", text], this.view, cx), cx))
           .child("Reply")))
       .child(div().text_size(12).child(th.body))
       .children((th.replies ?? []).map((r) => div().pl(10).text_size(12).text_color(t.muted).child(`${r.author}: ${r.body}`)))
@@ -434,7 +436,7 @@ export default class Cairn extends View {
     return [
       this.header(t, item ? item.name : this.view, true).child(div().flex_none().text_size(11).text_color(t.dim).child(item ? `${item.kind} · r${item.latest_revision}` : ""))
         .when(Boolean(item), (e) => e.child(div().id("cairn-comment").flex_none().px(7).py(3).rounded(5).cursor_pointer().text_size(11).text_color(t.muted).hover((s) => s.bg(t.hover))
-          .on_click((_e, cx) => { const rev = item.latest_revision; this.openComposer("revision", (text, cx) => this.write(["add", `${item.id}@${rev}`, text], item.id, cx), cx); }).child("Comment on this revision")))
+          .on_click((_e, cx) => { const rev = item.latest_revision; this.openComposer("revision", (text, cx) => this.write(["add", `${item.id}@${rev}`, "--", text], item.id, cx), cx); }).child("Comment on this revision")))
         .when(Boolean(item), (e) => e.child(div().id("cairn-browser").flex_none().px(7).py(3).rounded(5).cursor_pointer().text_size(11).text_color(t.muted).hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.openInBrowser(item.id, item.latest_revision, cx)).child("Open ↗"))),
       div().flex_1().min_h(0).relative()
         .child(v_flex().id("cairn-doc").absolute().inset_0().overflow_y_scroll().p(14).gap(12)
@@ -445,7 +447,7 @@ export default class Cairn extends View {
               ? h_flex().gap(6).items_start()
                 .child(div().flex_1().min_w(0).child(TextView.markdown(`cairn-md-${i}`, p.text).selectable()))
                 .when(Boolean(item), (e) => e.child(div().id(`cairn-sec-${i}`).flex_none().px(7).py(3).rounded(5).cursor_pointer().text_size(11).text_color(t.muted).hover((s) => s.bg(t.hover))
-                  .on_click((_e, cx) => { const rev = item.latest_revision; this.openComposer(["section", p.section], (text, cx) => this.write(["add", `${item.id}@${rev}`, text, "--section", p.section], item.id, cx), cx); }).child("+")))
+                  .on_click((_e, cx) => { const rev = item.latest_revision; this.openComposer(["section", p.section], (text, cx) => this.write(["add", `${item.id}@${rev}`, "--section", p.section, "--", text], item.id, cx), cx); }).child("+")))
               : TextView.markdown(`cairn-md-${i}`, p.text).selectable()))))
           .when(d && d.pic, (e) => e.child(this.picElement(d.pic, t)))
           .when(d && d.kind === "diagram" && !d.pic, (e) => e.child(div().text_size(11).text_color(t.dim).child("Could not render this diagram; showing source.")).child(div().font_family(settings().font_family ?? "JetBrains Mono").text_size(11).child(d.body ?? "")))
